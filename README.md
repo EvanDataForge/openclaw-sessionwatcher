@@ -1,6 +1,6 @@
 # openclaw-sessionwatcher
 
-A lightweight local web dashboard for monitoring live [OpenClaw](https://github.com/openclaw) agent sessions in real time.
+A lightweight local agent session monitor for watching live OpenClaw sessions in real time.
 
 ![Dashboard](https://img.shields.io/badge/Python-3.9%2B-blue) ![No dependencies](https://img.shields.io/badge/dependencies-none-green)
 
@@ -12,21 +12,24 @@ Sessionwatcher reads the JSONL session logs written by OpenClaw agents and prese
 
 <img width="1255" height="807" alt="image" src="https://github.com/user-attachments/assets/ecb953b9-ad2e-4c46-b116-792809513fd9" />
 
-
 **Features:**
 
 - Session list with status indicators (active / stopped / stale)
 - Per-session message stream with structured rendering:
+  - 💬 WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
   - User & assistant text messages (with `\n` → line break support)
-  - 💭 Thinking blocks (individually collapsible)
-  - ⚙ Tool calls with arguments
-  - ✓/✗ Tool results with trimmed preview + **(show all)** inline expand
+  - 💭 Thinking blocks (individually collapsible; notice shown when Anthropic encrypts content)
+  - ⚙ Tool calls with arguments (truncated at 300 chars with inline **show all**)
+  - ✓/✗ Tool results with trimmed preview + **(show all)** — fetched on demand, persists across auto-refresh
   - ⚡ Session event markers (`/thinking`, model changes)
+- **Chat-only toggle** — hides thinking/tool blocks instantly; button color reflects current state (green = all messages, red = chat only)
+- Full message history — entire session loaded, no truncation cap
 - Raw JSON modal for every message
 - Copy button for session/message IDs
 - Unread indicator (orange dot) for sessions with new messages
 - Smart scroll — stays at bottom during live updates, preserves position otherwise
 - Auto-refresh every 10 seconds with countdown
+- **Burger menu** (top right) — About dialog + Report an Issue (opens GitHub issue template chooser)
 - Zero external dependencies — pure Python stdlib + vanilla JS
 
 ---
@@ -42,7 +45,7 @@ Sessionwatcher reads the JSONL session logs written by OpenClaw agents and prese
 
 ```bash
 # Clone or copy the directory next to your OpenClaw data
-git clone https://github.com/your-org/openclaw-sessionwatcher
+git clone https://github.com/EvanDataForge/openclaw-sessionwatcher
 cd openclaw-sessionwatcher
 ```
 
@@ -111,8 +114,9 @@ OPENCLAW_DIR=/data/openclaw SESSIONWATCHER_BIND=0.0.0.0 SESSIONWATCHER_PORT=9000
     index.html (single-file frontend)
   ┌─────────────────────────────┐
   │  GET /api/sessions          │  session list with stats
-  │  GET /api/sessions/:id/messages │  message stream for one session
-  │  GET /api/status            │  health check
+  │  GET /api/sessions/:id/messages            │  full message stream for one session
+  │  GET /api/sessions/:id/entry/:eid/full     │  full text of one entry (on demand)
+  │  GET /api/status                           │  health check
   └─────────────────────────────┘
 ```
 
@@ -138,14 +142,14 @@ Each JSONL entry is classified by its `type` field:
 | `custom` | Skipped |
 
 Assistant messages are further decomposed into typed blocks:
-- `text` → text body
-- `thinking` → collapsible thinking block
-- `toolCall` → tool call with formatted arguments
-- `toolResult` (embedded) → result preview
+- `text` → chat bubble
+- `thinking` → collapsible thinking block (encrypted content flagged automatically)
+- `toolCall` → tool call with formatted arguments, truncated + expandable
+- `toolResult` (embedded) → result preview, full text fetchable on demand
 
 ### Frontend
 
-`index.html` is a self-contained single-file app (vanilla JS, no framework, no external CDN calls). State is managed in a plain `State` object. Auto-refresh calls the API every 10 seconds and patches only changed sections to avoid flicker.
+`index.html` is a self-contained single-file app (vanilla JS, no framework, no external CDN calls). State is managed in a plain `State` object. Auto-refresh calls the API every 10 seconds and patches only changed sections to avoid flicker. Expanded tool result content is cached client-side and survives auto-refresh cycles.
 
 ---
 
