@@ -222,6 +222,25 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             })
             continue
 
+        if etype == "custom":
+            custom_type = entry.get("customType", "")
+            data = entry.get("data", {})
+            if custom_type == "openclaw:prompt-error":
+                error = data.get("error", "?")
+                model = data.get("model", "")
+                text = f"prompt error: {error}" + (f" · {model}" if model else "")
+                msgs.append({
+                    "id":         entry.get("id", ""),
+                    "role":       "event",
+                    "event_type": "error",
+                    "text":       text,
+                    "ts_iso":     entry.get("timestamp", ""),
+                    "ts_fmt":     fmt_iso(entry.get("timestamp", "")),
+                    "raw_json":   json.dumps(entry, ensure_ascii=False),
+                })
+            # model-snapshot and other custom types: silently skip
+            continue
+
         if etype != "message":
             continue
         msg = entry.get("message", {})
