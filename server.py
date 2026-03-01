@@ -364,6 +364,19 @@ def load_all_sessions() -> list[dict]:
                 if msgs:
                     last_ts_iso = msgs[-1]["ts_iso"]
 
+            # Prefer the JSONL last-message timestamp over sessions.json updatedAt,
+            # because sessions.json is only written at session end / checkpoints,
+            # not during active inference.
+            last_ts_ms = 0
+            if last_ts_iso:
+                try:
+                    from datetime import timezone
+                    dt = datetime.fromisoformat(last_ts_iso.replace("Z", "+00:00"))
+                    last_ts_ms = int(dt.timestamp() * 1000)
+                except Exception:
+                    pass
+            effective_updated_at = max(updated_at, last_ts_ms)
+
             stype = session_type(key, val)
 
             # Session label — prefer human-readable names from metadata
@@ -391,9 +404,9 @@ def load_all_sessions() -> list[dict]:
                 "type":       stype,
                 "type_label": type_label(stype),
                 "label":      label[:60],
-                "updated_at": updated_at,
-                "updated_fmt":fmt_ts(updated_at),
-                "time_ago":   time_ago(updated_at),
+                "updated_at": effective_updated_at,
+                "updated_fmt":fmt_ts(effective_updated_at),
+                "time_ago":   time_ago(effective_updated_at),
                 "last_channel":  val.get("lastChannel", ""),
                 "model":      last_model or friendly_model(val.get("model", "")),
                 "context_pct":val.get("contextPct", 0),
