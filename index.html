@@ -284,10 +284,10 @@
   #messages {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 18px 32px;
+    padding: 16px 28px 36px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
   }
   #messages::-webkit-scrollbar { width: 4px; }
   #messages::-webkit-scrollbar-track { background: transparent; }
@@ -296,11 +296,11 @@
   .msg-bubble {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    max-width: 90%;
+    gap: 3px;
+    max-width: 92%;
   }
-  .msg-bubble.user     { align-self: flex-end; align-items: flex-end; }
-  .msg-bubble.assistant { align-self: flex-start; }
+  .msg-bubble.user      { align-self: flex-end;   align-items: flex-end;   max-width: 72%; }
+  .msg-bubble.assistant { align-self: flex-start;  align-items: flex-start; }
 
   .msg-header {
     display: flex;
@@ -308,6 +308,7 @@
     gap: 6px;
     font-size: 10px;
     color: var(--muted);
+    padding: 0 4px;
   }
   .msg-role {
     font-weight: 700;
@@ -355,22 +356,28 @@
     font-family: inherit;
   }
   .copy-btn:hover { opacity: 1; color: var(--accent); }
+
+  /* ── Chat bubble body ── */
+  .msg-body {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 12px;
-    line-height: 1.55;
+    border-radius: 18px;
+    padding: 10px 16px;
+    font-size: 13px;
+    line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-word;
   }
   .msg-bubble.user .msg-body {
-    background: rgba(79,142,247,.08);
-    border-color: rgba(79,142,247,.2);
+    background: rgba(79,142,247,.18);
+    border-color: rgba(79,142,247,.35);
+    border-radius: 18px 18px 5px 18px;
+    color: #d4e4ff;
   }
   .msg-bubble.assistant .msg-body {
-    background: rgba(166,123,255,.06);
-    border-color: rgba(166,123,255,.15);
+    background: rgba(255,255,255,.055);
+    border-color: rgba(255,255,255,.09);
+    border-radius: 18px 18px 18px 5px;
   }
 
   /* ── Session event markers ── */
@@ -583,6 +590,7 @@
     display: flex;
     gap: 8px;
     align-items: center;
+    padding: 0 4px;
   }
   .tok-in  { color: var(--teal); }
   .tok-out { color: var(--orange); }
@@ -674,7 +682,111 @@
     margin-right: 8px;
   }
 
-  /* ── Scrollbar global ────────────────────────────────── */
+  /* ── Chat-only toggle ── */
+  #messages.chat-only .msg-event,
+  #messages.chat-only .block-thinking,
+  #messages.chat-only .block-toolcall,
+  #messages.chat-only .block-toolresult,
+  #messages.chat-only .thinking-tc-bridge,
+  #messages.chat-only .thinking-only-warning,
+  #messages.chat-only [data-role="toolresult"] { display: none !important; }
+  /* hide assistant bubbles that have nothing left to show (no .msg-body) */
+  #messages.chat-only .msg-bubble.assistant:not(:has(.msg-body)) { display: none !important; }
+
+  #chat-toggle {
+    background: rgba(60,140,90,.12);
+    border: 1px solid rgba(60,140,90,.5);
+    border-radius: 4px;
+    color: #4fa870;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  #chat-toggle:hover { filter: brightness(1.15); }
+  #chat-toggle.active { border-color: rgba(170,60,60,.6); color: #b85555; background: rgba(170,60,60,.14); }
+
+  /* ── Burger menu ──────────────────────────────────────── */
+  #burger-wrap { position: relative; }
+  #burger-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    font-family: inherit;
+    transition: border-color .15s, color .15s;
+  }
+  #burger-btn:hover { border-color: var(--accent); color: var(--accent); }
+  #burger-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    min-width: 170px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.4);
+    z-index: 200;
+    overflow: hidden;
+  }
+  #burger-menu.open { display: block; }
+  .burger-item {
+    display: block;
+    width: 100%;
+    padding: 9px 16px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    color: var(--fg);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .12s;
+  }
+  .burger-item:hover { background: rgba(255,255,255,.05); }
+
+  /* ── About modal ── */
+  #about-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 500;
+    align-items: center;
+    justify-content: center;
+  }
+  #about-modal.open { display: flex; }
+  #about-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 32px;
+    max-width: 420px;
+    width: 90%;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    position: relative;
+  }
+  #about-box h2 { font-size: 16px; font-weight: 700; color: var(--accent); margin: 0 0 6px; }
+  #about-box .about-sub { font-size: 11px; color: var(--muted); margin: 0 0 18px; }
+  #about-box p { font-size: 12px; color: var(--fg); line-height: 1.7; margin: 0 0 10px; }
+  #about-box a { color: var(--accent); text-decoration: none; }
+  #about-box a:hover { text-decoration: underline; }
+  #about-close {
+    position: absolute; top: 12px; right: 14px;
+    background: transparent; border: none; color: var(--muted);
+    font-size: 18px; cursor: pointer; line-height: 1;
+  }
+  #about-close:hover { color: var(--fg); }
+  .about-divider { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+  /* ── Scrollbar global ── */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -688,8 +800,40 @@
   <h1>Sessionwatcher <span>· OpenClaw</span></h1>
   <div class="badge-stat">Sessions: <strong id="hdr-count">…</strong></div>
   <div class="badge-stat">Last refresh: <strong id="hdr-time">…</strong></div>
-  <div id="refresh-info" id="countdown"></div>
-  <button id="refresh-btn" onclick="App.refresh()">↻ Refresh</button>
+  <div id="hdr-right" style="display:flex;align-items:center;gap:8px;margin-left:auto">
+    <div id="refresh-info"></div>
+    <button id="refresh-btn" onclick="App.refresh()">↻ Refresh</button>
+    <div id="burger-wrap">
+      <button id="burger-btn" onclick="Menu.toggle()" title="Menu">☰</button>
+      <div id="burger-menu">
+        <button class="burger-item" onclick="Menu.about()">ℹ️ About</button>
+        <button class="burger-item" onclick="Menu.reportIssue()">🐛 Report an Issue</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── About modal ─────────────────────────────────────── -->
+<!-- ── About modal ─────────────────────────────────────── -->
+<div id="about-modal" onclick="if(event.target===this)Menu.closeAbout()">
+  <div id="about-box">
+    <button id="about-close" onclick="Menu.closeAbout()">✕</button>
+    <h2>Sessionwatcher</h2>
+    <p>A lightweight local agent session monitor that lets you watch OpenClaw sessions in real time — with chat bubbles, thinking blocks, tool calls, and live auto-refresh.</p>
+    <hr class="about-divider">
+    <p>
+      <strong>Repository</strong><br>
+      <a href="https://github.com/EvanDataForge/openclaw-sessionwatcher" target="_blank">github.com/EvanDataForge/openclaw-sessionwatcher</a>
+    </p>
+    <p>
+      <strong>Author</strong><br>
+      Evan · <a href="https://x.com/EvanDataForge" target="_blank">@EvanDataForge</a> on X/Twitter
+    </p>
+    <p>
+      <strong>License</strong><br>
+      MIT
+    </p>
+  </div>
 </div>
 
 <!-- ── Body ───────────────────────────────────────────── -->
@@ -720,6 +864,7 @@
       <div style="display:flex;align-items:center;gap:10px">
         <span id="detail-title" style="color:var(--muted);font-weight:400">← Select a session</span>
         <span id="detail-meta" style="font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap"></span>
+        <button id="chat-toggle" onclick="App.toggleChatOnly()" title="Toggle between all messages and chat only">🔍 All messages</button>
       </div>
     </div>
     <div id="detail-stats" style="display:none"></div>
@@ -728,7 +873,7 @@
         <div class="empty-icon">📡</div>
         <div class="empty-text">Select a session to view messages</div>
       </div>
-    </div>    <button id="scroll-btn" onclick="Scroll.toBottom()">↓ Zum Ende</button>  </div>
+    </div>    <button id="scroll-btn" onclick="Scroll.toBottom()">↓ To bottom</button>  </div>
 
 </div>
 
@@ -760,6 +905,7 @@ const State = {
   prevMsgCounts: {},        // session_id → last seen msg_count
   thinkingStates: {},      // key → true(expanded)/false(collapsed) per thinking block
   thinkingDefaultExpanded: true, // default for newly rendered blocks
+  chatOnly: false,         // toggle: show only chat bubbles
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -777,6 +923,38 @@ const API = {
     return r.json();
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Burger menu + About modal
+// ─────────────────────────────────────────────────────────────────────────────
+const Menu = {
+  toggle() {
+    document.getElementById('burger-menu').classList.toggle('open');
+  },
+  close() {
+    document.getElementById('burger-menu').classList.remove('open');
+  },
+  about() {
+    this.close();
+    document.getElementById('about-modal').classList.add('open');
+  },
+  closeAbout() {
+    document.getElementById('about-modal').classList.remove('open');
+  },
+  reportIssue() {
+    this.close();
+    window.open('https://github.com/EvanDataForge/openclaw-sessionwatcher/issues/new/choose', '_blank');
+  },
+};
+// Close burger on outside click
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('burger-wrap');
+  if (wrap && !wrap.contains(e.target)) Menu.close();
+});
+// Close about modal on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { Menu.closeAbout(); Menu.close(); }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Scroll management
@@ -833,6 +1011,18 @@ const Scroll = {
 // ─────────────────────────────────────────────────────────────────────────────
 const RawStore = {};
 const ToolFullStore = {};
+const ArgsStore = {};
+const ExpandedFull = {}; // entryId → full text, persists across re-renders
+
+function expandArgs(key) {
+  const el = document.querySelector(`.block-toolcall-args[data-akey="${key}"]`);
+  if (el) {
+    el.innerHTML = escText(ArgsStore[key] || '');
+    el.style.maxHeight = 'none';
+  }
+  const btn = document.querySelector(`.show-all-btn[data-akey="${key}"]`);
+  if (btn) btn.remove();
+}
 
 function esc(s) {
   return String(s)
@@ -843,7 +1033,8 @@ function esc(s) {
 }
 
 function escText(s) {
-  return esc(s).replace(/\n/g, '<br>');
+  // Replace actual newline chars AND literal \n sequences (from JSON-encoded strings)
+  return esc(s).replace(/\n/g, '<br>').replace(/\\n/g, '<br>');
 }
 
 function fmtTokens(n) {
@@ -894,9 +1085,9 @@ function renderSessionList() {
     if (recent && stopped) {
       statusDot = `<div class="ss-dot ss-stopped" title="Last stop: ${esc(lastStop)}"></div>`;
     } else if (recent && !stopped) {
-      statusDot = `<div class="ss-dot ss-active" title="Aktiv (letzte 10 Min)"></div>`;
+      statusDot = `<div class="ss-dot ss-active" title="Active (last 10 min)"></div>`;
     } else if (s.msg_count > 0) {
-      statusDot = `<div class="ss-dot ss-stale" title="${stopped ? 'Stop: '+esc(lastStop)+' · ' : ''}Keine Aktivität seit > 10 Min"></div>`;
+      statusDot = `<div class="ss-dot ss-stale" title="${stopped ? 'Stop: '+esc(lastStop)+' · ' : ''}No activity > 10 min"></div>`;
     }
     const unreadDot = State.unread.has(s.session_id) ? `<div class="unread-dot" title="New messages"></div>` : '';
     const typeClass = `type-${s.type}`;
@@ -958,7 +1149,7 @@ function renderDetailStats(s) {
       <div class="stat-label">Session ID</div>
       <div class="stat-value" style="font-size:10px;font-family:monospace;display:flex;align-items:center;gap:4px">
         <span title="${esc(s.session_id)}" style="user-select:none">${esc(s.session_id.slice(0,8))}&hellip;</span>
-        <button class="copy-btn" style="font-size:12px;padding:0 3px" onclick="copyMsgId('${esc(s.session_id)}',this)" title="Session-ID kopieren">⧉</button>
+        <button class="copy-btn" style="font-size:12px;padding:0 3px" onclick="copyMsgId('${esc(s.session_id)}',this)" title="Copy session ID">⧉</button>
       </div>
     </div>
   `;
@@ -998,13 +1189,31 @@ function syntaxHighlight(str) {
 }
 
 function showToolFull(key) {
-  const previewEl = document.querySelector(`.block-toolresult-preview[data-trkey="${key}"]`);
-  const full = ToolFullStore[key] || '';
-  if (!previewEl || !full) return;
-  previewEl.innerHTML = escText(full);
-  previewEl.style.maxHeight = 'none';
-  const btn = document.querySelector(`.show-all-btn[data-trkey="${key}"]`);
-  if (btn) btn.remove();
+  // legacy stub – real work is done by fetchAndShowFull via data attributes
+}
+
+async function fetchAndShowFull(btn) {
+  const eid    = btn.dataset.eid;
+  const trkey  = btn.dataset.trkey;
+  const sid    = State.detailSessionId;
+  if (!eid || !trkey || !sid) return;
+  btn.textContent = '…';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/sessions/${sid}/entry/${eid}/full`);
+    if (!r.ok) throw new Error('fetch failed');
+    const d = await r.json();
+    ExpandedFull[eid] = d.text || '';
+    const previewEl = document.querySelector(`.block-toolresult-preview[data-trkey="${trkey}"]`);
+    if (previewEl) {
+      previewEl.innerHTML = escText(d.text || '');
+      previewEl.style.maxHeight = 'none';
+    }
+    btn.remove();
+  } catch(e) {
+    btn.textContent = '(error)';
+    btn.disabled = false;
+  }
 }
 
 function toggleThinkingBlock(key) {
@@ -1013,31 +1222,44 @@ function toggleThinkingBlock(key) {
   if (el) el.classList.toggle('collapsed', !State.thinkingStates[key]);
 }
 
-function renderBlock(b, key) {
+function renderBlock(b, key, entryId) {
   if (b.kind === 'thinking') {
     const expanded = key in State.thinkingStates ? State.thinkingStates[key] : State.thinkingDefaultExpanded;
     State.thinkingStates[key] = expanded;
     const collapsed = expanded ? '' : ' collapsed';
-    return `<div class="block-thinking${collapsed}" data-key="${esc(key)}"><div class="block-thinking-label" onclick="toggleThinkingBlock('${esc(key)}')"><span class="block-thinking-toggle">▼</span> 💭 Thinking</div><div class="block-thinking-body">${escText(b.text.trim())}</div></div>`;
+    // Anthropic now encrypts actual thinking; the text field only holds a short summary label
+    const isEncrypted = b.encrypted === true;
+    const encNote = isEncrypted
+      ? `<span style="font-size:9px;color:var(--muted);margin-left:6px;opacity:.6">(summary only — content encrypted by Anthropic)</span>` : '';
+    return `<div class="block-thinking${collapsed}" data-key="${esc(key)}"><div class="block-thinking-label" onclick="toggleThinkingBlock('${esc(key)}')"><span class="block-thinking-toggle">▼</span> 💭 Thinking${encNote}</div><div class="block-thinking-body">${escText(b.text.trim())}</div></div>`;
   }
   if (b.kind === 'toolCall') {
+    const ARGS_LIMIT = 300;
+    const full = b.args || '';
+    const trimmed = full.length > ARGS_LIMIT;
+    const aKey = `${key}-args`;
+    if (trimmed) ArgsStore[aKey] = full;
+    const preview = trimmed ? full.slice(0, ARGS_LIMIT) : full;
+    const showAllBtn = trimmed
+      ? `<button class="show-all-btn" data-akey="${esc(aKey)}" onclick="expandArgs('${esc(aKey)}')">(show all)</button>` : '';
     return `<div class="block-toolcall">
       <div class="block-toolcall-header">⚙ Tool call: <strong>${esc(b.name)}</strong></div>
-      <div class="block-toolcall-args">${esc(b.args)}</div>
+      <div class="block-toolcall-args" data-akey="${esc(aKey)}" style="max-height:120px;overflow-y:auto">${escText(preview)}</div>${showAllBtn}
     </div>`;
   }
   if (b.kind === 'toolResult') {
     const errClass = b.is_error ? ' error' : '';
     const icon = b.is_error ? '✗' : '✓';
-    const trimmed = b.total_chars > 300;
+    const alreadyExpanded = entryId && ExpandedFull[entryId] !== undefined;
+    const displayText = alreadyExpanded ? ExpandedFull[entryId] : b.text;
+    const trimmed = !alreadyExpanded && b.total_chars > 300;
     const chars = trimmed ? ` · ${b.total_chars} chars` : '';
     const trKey = `${key}-tr`;
-    if (trimmed) ToolFullStore[trKey] = b.text_full || b.text;
     const showAllBtn = trimmed
-      ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" onclick="showToolFull('${esc(trKey)}')">(show all)</button>` : '';
+      ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" data-eid="${esc(entryId||'')}" onclick="fetchAndShowFull(this)">(show all)</button>` : '';
     return `<div class="block-toolresult${errClass}">
       <div class="block-toolresult-header">${icon} Result: <strong>${esc(b.name)}</strong><span style="font-weight:400;color:var(--muted)">${chars}</span></div>
-      <div class="block-toolresult-preview" data-trkey="${esc(trKey)}">${escText(b.text)}</div>${showAllBtn}
+      <div class="block-toolresult-preview" data-trkey="${esc(trKey)}" style="${alreadyExpanded?'':'max-height:120px;overflow-y:auto'}">${escText(displayText)}</div>${showAllBtn}
     </div>`;
   }
   if (b.kind === 'text' && b.text) {
@@ -1048,8 +1270,9 @@ function renderBlock(b, key) {
 
 function renderMessages(messages) {
   const el = document.getElementById('messages');
-  // Clear raw cache
+  // Clear caches
   Object.keys(RawStore).forEach(k => delete RawStore[k]);
+  Object.keys(ArgsStore).forEach(k => delete ArgsStore[k]);
 
   if (!messages.length) {
     el.innerHTML = `<div class="empty">
@@ -1069,10 +1292,25 @@ function renderMessages(messages) {
       </div>`;
     }
 
+    // ── User bubble ──
+    if (m.role === 'user') {
+      const text = m.text || (m.blocks||[]).filter(b=>b.kind==='text').map(b=>b.text).join('\n') || '';
+      RawStore[idx] = m.raw_json || '';
+      if (!text.trim()) return '';
+      return `<div class="msg-bubble user" data-msgidx="${idx}">
+        <div class="msg-header">
+          <span class="msg-role user">You</span>
+          <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
+          ${m.id ? `<button class="copy-btn" onclick="openRawModal(${idx})" title="Raw JSON">{raw}</button>` : ''}
+        </div>
+        <div class="msg-body">${escText(text)}</div>
+      </div>`;
+    }
+
+    // ── toolResult / assistant: original full rendering ──
     const isToolResult = m.role === 'toolResult';
     const roleClass = m.role === 'user' ? 'user' : (isToolResult ? 'toolresult' : 'assistant');
 
-    // ── Header ──
     let roleLabel = m.role;
     if (isToolResult) roleLabel = `result:${m.tool_name}`;
     const modelInfo = !isToolResult && m.model && m.model !== '—'
@@ -1080,23 +1318,23 @@ function renderMessages(messages) {
     const errBadge = isToolResult && m.is_error
       ? `<span style="color:var(--red);font-size:10px">ERROR</span>` : '';
 
-    // ── Body ──
     let bodyHtml = '';
     if (isToolResult) {
-      const chars = m.total_chars > 300 ? ` · ${m.total_chars} chars total` : '';
       const errClass = m.is_error ? ' error' : '';
-      const trimmed = m.total_chars > 300;
+      const alreadyExpanded = m.id && ExpandedFull[m.id] !== undefined;
+      const displayText = alreadyExpanded ? ExpandedFull[m.id] : (m.text || '(empty)');
+      const trimmed = !alreadyExpanded && m.total_chars > 300;
+      const chars = trimmed ? ` · ${m.total_chars} chars total` : '';
       const trKey = `${idx}-tr`;
-      if (trimmed) ToolFullStore[trKey] = m.text_full || m.text;
       const showAllBtn = trimmed
-        ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" onclick="showToolFull('${esc(trKey)}')">(show all)</button>` : '';
+        ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" data-eid="${esc(m.id||'')}" onclick="fetchAndShowFull(this)">(show all)</button>` : '';
       bodyHtml = `<div class="block-toolresult${errClass}" style="margin:0">
         <div class="block-toolresult-header">${m.is_error?'✗':'✓'} ${esc(m.tool_name)}<span style="font-weight:400;color:var(--muted)">${chars}</span></div>
-        <div class="block-toolresult-preview" data-trkey="${esc(trKey)}">${escText(m.text || '(empty)')}</div>${showAllBtn}
+        <div class="block-toolresult-preview" data-trkey="${esc(trKey)}" style="${alreadyExpanded?'':'max-height:120px;overflow-y:auto'}">${escText(displayText)}</div>${showAllBtn}
       </div>`;
     } else if (m.blocks && m.blocks.length > 0) {
       bodyHtml = m.blocks.map((b, bi) => {
-        let html = renderBlock(b, `${idx}-${bi}`);
+        let html = renderBlock(b, `${idx}-${bi}`, m.id);
         const next = m.blocks[bi + 1];
         if (b.kind === 'thinking' && next?.kind === 'toolCall' && m.stop_reason) {
           html += `<div class="thinking-tc-bridge">↳ ${stopBadge(m.stop_reason)}</div>`;
@@ -1110,15 +1348,12 @@ function renderMessages(messages) {
       bodyHtml = `<div class="msg-body">${escText(m.text || '(empty)')}</div>`;
     }
 
-    // ── Footer: tokens ──
     const tokInfo = !isToolResult && m.role === 'assistant' && (m.input_tok || m.output_tok)
       ? `<span class="tok-in">▲${fmtTokens(m.input_tok)}</span> <span class="tok-out">▼${fmtTokens(m.output_tok)}</span>` : '';
 
-    // ── Raw (stored in RawStore, opened via modal) ──
     const rawContent = m.raw_json || '';
     RawStore[idx] = rawContent;
 
-    // ── Stop reason + thinking-only warning ──
     const stopBadgeHtml = !isToolResult ? stopBadge(m.stop_reason) : '';
     const hasTextOutput = !isToolResult && (m.blocks||[]).some(b => b.kind === 'text' && b.text && b.text.trim());
     const hasThinking   = !isToolResult && (m.blocks||[]).some(b => b.kind === 'thinking');
@@ -1133,11 +1368,11 @@ function renderMessages(messages) {
       return `<div class="thinking-only-warning">⚠ Stopped after thinking — no text or tool call produced (stopReason: ${esc(m.stop_reason || 'unknown')})</div>`;
     })() : '';
 
-    return `<div class="msg-bubble ${isToolResult ? 'assistant' : roleClass}" data-msgidx="${idx}">
+    return `<div class="msg-bubble ${isToolResult ? 'assistant' : roleClass}" data-msgidx="${idx}"${isToolResult ? ' data-role="toolresult"' : ''}>
       <div class="msg-header">
         <span class="msg-role ${isToolResult ? 'assistant' : roleClass}" style="${isToolResult ? 'color:var(--green)' : ''}">${esc(roleLabel)}</span>
         ${modelInfo}${errBadge}${stopBadgeHtml}
-        ${m.id ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="ID kopieren">⧉</button><button class="copy-btn" onclick="openRawModal(${idx})" title="Raw JSON anzeigen">{raw}</button></span>` : ''}
+        ${m.id ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="Copy ID">⧉</button><button class="copy-btn" onclick="openRawModal(${idx})" title="View raw JSON">{raw}</button></span>` : ''}
         <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
       </div>
       ${bodyHtml}
@@ -1145,6 +1380,10 @@ function renderMessages(messages) {
       ${tokInfo ? `<div class="msg-footer">${tokInfo}</div>` : ''}
     </div>`;
   }).join('');
+
+  // Restore chat-only toggle state after re-render
+  el.classList.toggle('chat-only', State.chatOnly);
+  App._applyChatToggleBtn();
 
   Scroll._onScroll(); // update button visibility
 }
@@ -1227,6 +1466,19 @@ const App = {
     renderSessionList();
   },
 
+  _applyChatToggleBtn() {
+    const btn = document.getElementById('chat-toggle');
+    if (!btn) return;
+    btn.classList.toggle('active', State.chatOnly);
+    btn.textContent = State.chatOnly ? '💬 Chat only' : '🔍 All messages';
+  },
+  toggleChatOnly() {
+    State.chatOnly = !State.chatOnly;
+    const el = document.getElementById('messages');
+    el.classList.toggle('chat-only', State.chatOnly);
+    App._applyChatToggleBtn();
+  },
+
   async selectSession(sessionId) {
     State.selectedId = sessionId;
     State.unread.delete(sessionId);
@@ -1248,6 +1500,11 @@ const App = {
   async _loadDetail(s, isRefresh = false) {
     renderDetailHeader(s);
     renderDetailStats(s);
+
+    // Clear expanded state when switching to a different session
+    if (State.detailSessionId !== s.session_id) {
+      Object.keys(ExpandedFull).forEach(k => delete ExpandedFull[k]);
+    }
 
     const msgEl = document.getElementById('messages');
     const isSameSession = State.detailSessionId === s.session_id;

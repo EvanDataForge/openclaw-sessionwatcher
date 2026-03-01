@@ -6,15 +6,13 @@ Runs on http://127.0.0.1:8090
 
 import json
 import os
-import glob
 import re
 import time
-import gzip
 import argparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime, timezone
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 # ── Config ────────────────────────────────────────────────────────────────────
 OPENCLAW_DIR = Path(os.environ.get("OPENCLAW_DIR", Path.home() / ".openclaw"))
@@ -23,7 +21,6 @@ DEFAULT_PORT = int(os.environ.get("SESSIONWATCHER_PORT", 8090))
 DEFAULT_BIND = os.environ.get("SESSIONWATCHER_BIND", "127.0.0.1")
 
 ACTIVE_WINDOW_H = 24   # sessions active in last N hours are shown
-RECENT_MSGS     = 50   # max messages per session in detail endpoint
 
 # ── Metadata stripping ───────────────────────────────────────────────────────
 
@@ -133,7 +130,7 @@ def load_sessions_store(agent_dir: Path) -> dict:
     except Exception:
         return {}
 
-def tail_jsonl(path: Path, n: int = RECENT_MSGS) -> list[dict]:
+def tail_jsonl(path: Path, n: int = 200) -> list[dict]:
     """Read last n lines from a JSONL file (handles large files efficiently)."""
     if not path.exists():
         return []
@@ -156,6 +153,25 @@ def tail_jsonl(path: Path, n: int = RECENT_MSGS) -> list[dict]:
         return result
     except Exception:
         return []
+
+def read_jsonl_full(path: Path) -> list[dict]:
+    """Read ALL lines from a JSONL file (used for full session message view)."""
+    if not path.exists():
+        return []
+    result = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    result.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return result
 
 def _tool_result_preview(content) -> tuple[str, str, int]:
     """Return (preview_text, full_text, total_chars) from toolResult content."""
@@ -259,8 +275,9 @@ def parse_messages(entries: list[dict]) -> list[dict]:
 
             elif btype == "thinking":
                 t = block.get("thinking", "")
+                has_sig = bool(block.get("thinkingSignature"))
                 plain_parts.append(f"[Thinking: {t[:60]}…]")
-                blocks.append({"kind": "thinking", "text": t})
+                blocks.append({"kind": "thinking", "text": t, "encrypted": has_sig})
 
             elif btype == "toolCall":
                 name = block.get("name", "?")
@@ -339,7 +356,6 @@ def load_all_sessions() -> list[dict]:
             # Count messages & get stats
             msg_count   = 0
             last_model  = ""
-            total_cost  = 0.0
             total_input = 0
             total_output= 0
             last_ts_iso = ""
@@ -370,7 +386,6 @@ def load_all_sessions() -> list[dict]:
             last_ts_ms = 0
             if last_ts_iso:
                 try:
-                    from datetime import timezone
                     dt = datetime.fromisoformat(last_ts_iso.replace("Z", "+00:00"))
                     last_ts_ms = int(dt.timestamp() * 1000)
                 except Exception:
@@ -411,7 +426,7 @@ def load_all_sessions() -> list[dict]:
                 "model":      last_model or friendly_model(val.get("model", "")),
                 "context_pct":val.get("contextPct", 0),
                 "msg_count":  msg_count,
-                "total_cost": round(total_cost, 4),
+                "total_cost": 0.0,
                 "total_input": total_input,
                 "total_output": total_output,
                 "last_ts_iso": last_ts_iso,
@@ -430,8 +445,8 @@ def load_session_messages(session_id: str) -> list[dict]:
             continue
         jsonl_path = agent_dir / "sessions" / f"{session_id}.jsonl"
         if jsonl_path.exists():
-            tail = tail_jsonl(jsonl_path, RECENT_MSGS)
-            return parse_messages(tail)
+            entries = read_jsonl_full(jsonl_path)
+            return parse_messages(entries)
     return []
 
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
@@ -464,7 +479,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path   = parsed.path.rstrip("/") or "/"
-        qs     = parse_qs(parsed.query)
 
         if path == "/" or path == "/index.html":
             self.send_html(Path(__file__).parent / "index.html")
@@ -489,6 +503,21 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_json({"error": "invalid path"}, 400)
 
+        elif path.startswith("/api/sessions/") and "/entry/" in path and path.endswith("/full"):
+            # /api/sessions/<session_id>/entry/<entry_id>/full
+            parts = path.split("/")
+            # parts: ['', 'api', 'sessions', session_id, 'entry', entry_id, 'full']
+            if len(parts) == 7:
+                session_id = parts[3]
+                entry_id   = parts[5]
+                full_text  = self._load_entry_full(session_id, entry_id)
+                if full_text is None:
+                    self.send_json({"error": "entry not found"}, 404)
+                else:
+                    self.send_json({"text": full_text})
+            else:
+                self.send_json({"error": "invalid path"}, 400)
+
         elif path == "/api/status":
             sessions = load_all_sessions()
             active   = [s for s in sessions if s["has_file"]]
@@ -501,6 +530,32 @@ class Handler(BaseHTTPRequestHandler):
 
         else:
             self.send_error(404, "Not found")
+
+    def _load_entry_full(self, session_id: str, entry_id: str):
+        """Find entry by ID in the session JSONL and return its full text content."""
+        for agent_dir in AGENTS_DIR.iterdir():
+            if not agent_dir.is_dir():
+                continue
+            jsonl_path = agent_dir / "sessions" / f"{session_id}.jsonl"
+            if not jsonl_path.exists():
+                continue
+            for entry in read_jsonl_full(jsonl_path):
+                if entry.get("id", "") != entry_id:
+                    continue
+                msg = entry.get("message", {})
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    parts = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            t = block.get("text") or block.get("thinking", "")
+                            if t:
+                                parts.append(t)
+                    return "\n".join(parts)
+                return str(content)
+        return None
 
     def do_OPTIONS(self):
         self.send_response(204)
