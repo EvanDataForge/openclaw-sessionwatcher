@@ -16,9 +16,9 @@ Sessionwatcher reads the JSONL session logs written by OpenClaw agents and prese
 
 - Session list with status indicators (active / stopped / stale)
 - Per-session message stream with structured rendering:
-  - 💬 WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
+  - WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
   - User & assistant text messages (with `\n` → line break support)
-  - 💭 Thinking blocks (individually collapsible; notice shown when Anthropic encrypts content)
+  - Thinking blocks (individually collapsible; notice shown when Anthropic encrypts content)
   - ⚙ Tool calls with arguments (truncated at 300 chars with inline **show all**)
   - ✓/✗ Tool results with trimmed preview + **(show all)** — fetched on demand, persists across auto-refresh
   - ⚡ Session event markers (`/thinking`, model changes)
