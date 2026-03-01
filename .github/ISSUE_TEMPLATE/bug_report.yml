@@ -1,0 +1,90 @@
+name: Bug Report
+description: Melde einen Fehler oder ein unerwartetes Verhalten
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Danke fürs Melden. Bitte gib so viele Details wie möglich an.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Kurzbeschreibung
+      description: Was ist kaputt?
+      placeholder: z. B. Session-Status wird nicht aktualisiert
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Schritte zum Reproduzieren
+      description: Wie kann man den Fehler zuverlässig nachstellen?
+      placeholder: |
+        1. Gehe zu ...
+        2. Klicke auf ...
+        3. Beobachte ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartetes Verhalten
+      placeholder: Was sollte passieren?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Tatsächliches Verhalten
+      placeholder: Was ist stattdessen passiert?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Schweregrad
+      options:
+        - Niedrig (kosmetisch)
+        - Mittel (Workaround möglich)
+        - Hoch (blockierend)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / Commit
+      description: Tag, Commit SHA oder Branch
+      placeholder: z. B. main @ a1b2c3d
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Fehlermeldungen
+      description: Relevante Logs, Stacktraces oder Screenshots
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Umgebung
+      description: Betriebssystem, Browser, Python/Node-Version etc.
+      placeholder: |
+        - OS: macOS 15
+        - Browser: Chrome 123
+        - Python: 3.12
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checkliste
+      options:
+        - label: Ich habe geprüft, dass kein Duplikat-Issue existiert
+          required: true
+        - label: Ich kann den Fehler reproduzieren
+          required: false

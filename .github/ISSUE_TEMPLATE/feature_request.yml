@@ -1,0 +1,87 @@
+name: Feature Request
+description: Schlage eine neue Funktion oder Verbesserung vor
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Danke für deinen Vorschlag. Je konkreter, desto schneller umsetzbar.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Kurzbeschreibung
+      description: Welche Funktion wünschst du dir?
+      placeholder: z. B. Filter für Session-Liste nach Status
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Welches Problem löst das?
+      description: Warum ist diese Funktion wichtig?
+      placeholder: Beschreibe den aktuellen Pain Point
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Lösungsvorschlag
+      description: Wie sollte die Funktion idealerweise aussehen?
+      placeholder: Beschreibe UX, API, Verhalten oder Akzeptanzkriterien
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativen
+      description: Welche Workarounds oder Alternativen gibt es aktuell?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Bereich
+      options:
+        - Frontend
+        - Backend
+        - API
+        - DevOps / Deployment
+        - Dokumentation
+        - Sonstiges
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priorität
+      options:
+        - Nice to have
+        - Wichtig
+        - Kritisch
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Erwarteter Nutzen
+      description: Wer profitiert und wie?
+      placeholder: z. B. Weniger manuelle Schritte, weniger Fehler, bessere Transparenz
+
+  - type: textarea
+    id: implementation_notes
+    attributes:
+      label: Technische Hinweise (optional)
+      description: Skizzen, pseudo-code, betroffene Dateien/Module
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checkliste
+      options:
+        - label: Ich habe geprüft, dass kein Duplikat-Issue existiert
+          required: true
