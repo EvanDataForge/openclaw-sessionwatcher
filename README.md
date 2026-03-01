@@ -10,6 +10,9 @@ A lightweight local web dashboard for monitoring live [OpenClaw](https://github.
 
 Sessionwatcher reads the JSONL session logs written by OpenClaw agents and presents them as a live, auto-refreshing web UI. It gives you a bird's-eye view of all active and recent sessions, and lets you drill into individual conversations to inspect messages, tool calls, thinking blocks, and more — without having to tail log files manually.
 
+<img width="1255" height="807" alt="image" src="https://github.com/user-attachments/assets/ecb953b9-ad2e-4c46-b116-792809513fd9" />
+
+
 **Features:**
 
 - Session list with status indicators (active / stopped / stale)
