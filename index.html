@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sessionwatcher · OpenClaw</title>
+<title>SessionWatcher · OpenClaw</title>
 <style>
   /* ── Reset & Base ─────────────────────────────────────── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -68,16 +68,21 @@
     flex-shrink: 0;
   }
   #header h1 {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     font-size: 14px;
     font-weight: 600;
     letter-spacing: .04em;
     color: var(--accent);
   }
-  #header h1 span { color: var(--muted); font-weight: 400; }
+  #header h1 .brand-sub { color: var(--muted); font-weight: 400; }
 
   .status-dot {
+    display: inline-block;
     width: 8px; height: 8px; border-radius: 50%;
     background: var(--green);
+    margin: 0;
     flex-shrink: 0;
     animation: pulse 2s ease-in-out infinite;
   }
@@ -141,6 +146,27 @@
     display: flex;
     flex: 1;
     min-height: 0;
+  }
+
+  #footer {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 3px 18px;
+    min-height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    font-size: 10px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  #footer-meta {
+    opacity: .82;
+    white-space: nowrap;
+  }
+  #footer-meta strong {
+    font-weight: 600;
+    color: var(--text);
   }
 
   /* ── Left: Session List ───────────────────────────────── */
@@ -938,10 +964,7 @@
 
 <!-- ── Header ──────────────────────────────────────────── -->
 <div id="header">
-  <div class="status-dot" id="status-dot"></div>
-  <h1>Sessionwatcher <span>· OpenClaw</span></h1>
-  <div class="badge-stat">Sessions: <strong id="hdr-count">…</strong></div>
-  <div class="badge-stat">Last refresh: <strong id="hdr-time">…</strong></div>
+  <h1><span class="brand-main">SessionWatcher</span><span class="status-dot" id="status-dot" aria-hidden="true"></span><span class="brand-sub">OpenClaw</span></h1>
   <div id="hdr-right" style="display:flex;align-items:center;gap:8px;margin-left:auto">
     <button id="refresh-btn" onclick="App.refresh()">↻ Refresh</button>
     <button id="theme-btn" onclick="Theme.toggle()" title="Light/Dark umschalten" aria-label="Light/Dark umschalten"></button>
@@ -960,7 +983,7 @@
 <div id="about-modal" onclick="if(event.target===this)Menu.closeAbout()">
   <div id="about-box">
     <button id="about-close" onclick="Menu.closeAbout()">✕</button>
-    <h2>Sessionwatcher</h2>
+    <h2>SessionWatcher</h2>
     <p>A lightweight local agent session monitor that lets you watch OpenClaw sessions in real time — with chat bubbles, thinking blocks, tool calls, and live auto-refresh.</p>
     <hr class="about-divider">
     <p>
@@ -1017,6 +1040,10 @@
       </div>
     </div>    <button id="scroll-btn" onclick="Scroll.toBottom()">↓ To bottom</button>  </div>
 
+</div>
+
+<div id="footer">
+  <div id="footer-meta">Sessions: <strong id="hdr-count">…</strong> &nbsp; Last refresh: <strong id="hdr-time">…</strong></div>
 </div>
 
 <div id="raw-modal" onclick="if(event.target===this)closeRawModal()">
