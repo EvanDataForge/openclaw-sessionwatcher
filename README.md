@@ -10,11 +10,9 @@ A lightweight local agent session monitor for watching live OpenClaw sessions in
 
 Sessionwatcher reads the JSONL session logs written by OpenClaw agents and presents them as a live, auto-refreshing web UI. It gives you a bird's-eye view of all active and recent sessions, and lets you drill into individual conversations to inspect messages, tool calls, thinking blocks, and more — without having to tail log files manually.
 
-<img width="1541" height="755" alt="image" src="https://github.com/user-attachments/assets/596eeab5-f42b-4089-9958-5c6b23313ed5" />  
+<img width="1358" height="678" alt="image" src="https://github.com/user-attachments/assets/dc373026-1733-4622-94f7-2a795b1f2806" />  
 with optional light mode:  
-<img width="1357" height="679" alt="image" src="https://github.com/user-attachments/assets/1076800a-dc78-48fe-b870-f089cd3cf4dd" />
-
-
+<img width="1357" height="679" alt="image" src="https://github.com/user-attachments/assets/1076800a-dc78-48fe-b870-f089cd3cf4dd" />  
 
 **Features:**
 
