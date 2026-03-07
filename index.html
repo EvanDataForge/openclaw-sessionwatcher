@@ -1029,21 +1029,40 @@ const State = {
   thinkingStates: {},      // key → true(expanded)/false(collapsed) per thinking block
   thinkingDefaultExpanded: true, // default for newly rendered blocks
   chatOnly: false,         // toggle: show only chat bubbles
+  authError: null,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API
 // ─────────────────────────────────────────────────────────────────────────────
+class ApiError extends Error {
+  constructor(message, status, payload = null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.payload = payload;
+    this.authRequired = status === 401 || !!payload?.auth_required;
+  }
+}
+
 const API = {
+  async request(path) {
+    const r = await fetch(path, { credentials: 'same-origin' });
+    if (r.ok) return r.json();
+
+    let payload = null;
+    try {
+      payload = await r.json();
+    } catch (_) {}
+
+    throw new ApiError(payload?.error || `API error (${r.status})`, r.status, payload);
+  },
+
   async sessions() {
-    const r = await fetch('/api/sessions');
-    if (!r.ok) throw new Error('API error');
-    return r.json();
+    return this.request('/api/sessions');
   },
   async messages(sessionId) {
-    const r = await fetch(`/api/sessions/${sessionId}/messages`);
-    if (!r.ok) throw new Error('API error');
-    return r.json();
+    return this.request(`/api/sessions/${sessionId}/messages`);
   },
 };
 
@@ -1191,6 +1210,15 @@ function esc(s) {
 function escText(s) {
   // Replace actual newline chars AND literal \n sequences (from JSON-encoded strings)
   return esc(s).replace(/\n/g, '<br>').replace(/\\n/g, '<br>');
+}
+
+function authMessage(error) {
+  return error?.payload?.error || 'Access token required. Open /?access_token=... once in this browser.';
+}
+
+function renderAuthRequired(target, message, icon = '🔐') {
+  if (!target) return;
+  target.innerHTML = `<div class="empty"><div class="empty-icon">${icon}</div><div class="empty-text">${esc(message)}</div></div>`;
 }
 
 function fmtTokens(n) {
@@ -1375,9 +1403,7 @@ async function fetchAndShowFull(btn) {
   btn.textContent = '…';
   btn.disabled = true;
   try {
-    const r = await fetch(`/api/sessions/${sid}/entry/${eid}/full`);
-    if (!r.ok) throw new Error('fetch failed');
-    const d = await r.json();
+    const d = await API.request(`/api/sessions/${sid}/entry/${eid}/full`);
     ExpandedFull[eid] = d.text || '';
     const previewEl = document.querySelector(`.block-toolresult-preview[data-trkey="${trkey}"]`);
     if (previewEl) {
@@ -1386,6 +1412,10 @@ async function fetchAndShowFull(btn) {
     }
     btn.remove();
   } catch(e) {
+    if (e?.authRequired) {
+      State.authError = authMessage(e);
+      document.getElementById('refresh-info').textContent = State.authError;
+    }
     btn.textContent = '(error)';
     btn.disabled = false;
   }
@@ -1615,6 +1645,7 @@ const App = {
 
     try {
       const data = await API.sessions();
+      State.authError = null;
       State.sessions   = data.sessions || [];
       State.lastRefresh = data.generated_fmt || '';
 
@@ -1643,6 +1674,13 @@ const App = {
 
     } catch (e) {
       document.getElementById('status-dot').className = 'status-dot error';
+      if (e?.authRequired) {
+        State.authError = authMessage(e);
+        renderAuthRequired(document.getElementById('session-list'), State.authError);
+        renderAuthRequired(document.getElementById('messages'), State.authError);
+        document.getElementById('refresh-info').textContent = State.authError;
+        document.getElementById('hdr-count').textContent = '0';
+      }
       console.error('Refresh failed', e);
     } finally {
       State.loading = false;
@@ -1712,6 +1750,7 @@ const App = {
 
     try {
       const data = await API.messages(s.session_id);
+      State.authError = null;
       const msgs = data.messages || [];
       const newCount = msgs.length;
 
@@ -1740,6 +1779,12 @@ const App = {
         Scroll.toBottom();
       }
     } catch(e) {
+      if (e?.authRequired) {
+        State.authError = authMessage(e);
+        renderAuthRequired(msgEl, State.authError);
+        document.getElementById('refresh-info').textContent = State.authError;
+        return;
+      }
       if (!isRefresh || !isSameSession) {
         msgEl.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load messages</div></div>`;
       }

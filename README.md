@@ -79,6 +79,28 @@ python3 server.py
 kill $(cat server.pid)
 ```
 
+### macOS launchctl control
+
+If SessionWatcher is installed as a LaunchAgent, you can control it with:
+
+```bash
+./launchctl.sh start
+./launchctl.sh stop
+./launchctl.sh restart
+./launchctl.sh status
+./launchctl.sh logs
+```
+
+Short zsh helpers are also available in interactive shells:
+
+```bash
+sw-start
+sw-stop
+sw-restart
+sw-status
+sw-logs
+```
+
 ### Options
 
 | Environment variable      | Default       | Description                        |
@@ -86,11 +108,69 @@ kill $(cat server.pid)
 | `OPENCLAW_DIR`            | `~/.openclaw` | Path to OpenClaw data directory    |
 | `SESSIONWATCHER_PORT`     | `8090`        | HTTP port to listen on             |
 | `SESSIONWATCHER_BIND`     | `127.0.0.1`   | Bind address (use `0.0.0.0` for LAN) |
+| `SESSIONWATCHER_ACCESS_TOKEN` | _(empty)_ | Required for non-loopback/LAN bind; enables cookie-based access protection |
 
-Example — expose on LAN, custom OpenClaw dir:
+Example — expose on LAN safely, with a custom OpenClaw dir:
 
 ```bash
-OPENCLAW_DIR=/data/openclaw SESSIONWATCHER_BIND=0.0.0.0 SESSIONWATCHER_PORT=9000 ./start.sh
+OPENCLAW_DIR=/data/openclaw \
+SESSIONWATCHER_BIND=0.0.0.0 \
+SESSIONWATCHER_PORT=9000 \
+SESSIONWATCHER_ACCESS_TOKEN='replace-with-a-long-random-token' \
+./start.sh
+```
+
+Then open the UI once with:
+
+```text
+http://<your-lan-ip>:9000/?access_token=<your-token>
+```
+
+That bootstrap URL stores an `HttpOnly` cookie and immediately removes the token from the address bar.
+
+> SessionWatcher will refuse to bind to `0.0.0.0`, `::`, or any other non-loopback address unless `SESSIONWATCHER_ACCESS_TOKEN` is set.
+
+### Persistent local configuration
+
+`start.sh` automatically loads the first file that exists from this list:
+
+- `.sessionwatcher.env`
+- `.env.local`
+- `.env`
+
+This is useful if you want SessionWatcher to always start in LAN mode without passing flags manually.
+
+Example:
+
+```bash
+cat > .env.local <<'EOF'
+SESSIONWATCHER_BIND=0.0.0.0
+SESSIONWATCHER_PORT=8090
+SESSIONWATCHER_ACCESS_TOKEN=replace-with-a-long-random-token
+EOF
+```
+
+These files are intended for local machine config and should not be committed.
+
+### LaunchAgent / auto-start on macOS
+
+SessionWatcher can run as a macOS `LaunchAgent` so it starts automatically when your user logs in.
+
+Typical properties of the LaunchAgent setup:
+
+- starts on login (`RunAtLoad`)
+- restarts automatically if it exits (`KeepAlive`)
+- writes logs to `logs/launchd.log`
+- can inject `SESSIONWATCHER_BIND`, `SESSIONWATCHER_PORT`, and `SESSIONWATCHER_ACCESS_TOKEN`
+
+Control commands:
+
+```bash
+./launchctl.sh start
+./launchctl.sh stop
+./launchctl.sh restart
+./launchctl.sh status
+./launchctl.sh logs
 ```
 
 ---
@@ -154,6 +234,18 @@ Assistant messages are further decomposed into typed blocks:
 ### Frontend
 
 `index.html` is a self-contained single-file app (vanilla JS, no framework, no external CDN calls). It supports both light and dark themes, keeps plain chat messages in their existing chat-bubble layout, and groups non-text assistant/tool activity into distinct system-entry containers for easier scanning. State is managed in a plain `State` object. Auto-refresh calls the API every 10 seconds and patches only changed sections to avoid flicker. Expanded tool result content is cached client-side and survives auto-refresh cycles.
+
+---
+
+## Security
+
+- Default bind is `127.0.0.1`, so SessionWatcher stays local unless you opt into LAN exposure.
+- If you bind to a non-loopback address, `SESSIONWATCHER_ACCESS_TOKEN` is mandatory.
+- Authentication uses a one-time `/?access_token=...` bootstrap and an `HttpOnly` cookie afterwards.
+- All UI and API routes are protected when an access token is configured, including `/api/status`.
+- LAN requests are served by a threaded HTTP server, so slow session scans on one request should not block unrelated connections.
+- SessionWatcher is still plain HTTP. For untrusted networks or TLS, put it behind a reverse proxy or tunnel.
+- Wildcard CORS is intentionally disabled.
 
 ---
 

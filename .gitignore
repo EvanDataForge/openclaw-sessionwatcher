@@ -2,5 +2,8 @@ logs/
 *.log
 __pycache__/
 *.pyc
+.env
+.env.local
+.sessionwatcher.env
 
 server.pid

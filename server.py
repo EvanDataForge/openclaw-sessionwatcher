@@ -7,18 +7,24 @@ Runs on http://127.0.0.1:8090
 import json
 import os
 import re
+import ipaddress
 import time
+import socket
 import argparse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl, urlencode
 
 # ── Config ────────────────────────────────────────────────────────────────────
 OPENCLAW_DIR = Path(os.environ.get("OPENCLAW_DIR", Path.home() / ".openclaw"))
 AGENTS_DIR   = OPENCLAW_DIR / "agents"
 DEFAULT_PORT = int(os.environ.get("SESSIONWATCHER_PORT", 8090))
 DEFAULT_BIND = os.environ.get("SESSIONWATCHER_BIND", "127.0.0.1")
+DEFAULT_ACCESS_TOKEN = os.environ.get("SESSIONWATCHER_ACCESS_TOKEN", "").strip()
+
+ACCESS_COOKIE_NAME = "sessionwatcher_access"
+ACCESS_QUERY_PARAM = "access_token"
 
 ACTIVE_WINDOW_H = 24   # sessions active in last N hours are shown
 
@@ -116,6 +122,44 @@ def type_label(t: str) -> str:
         "main":     "Direct",
         "other":    "Other",
     }.get(t, t)
+
+def is_public_host(host: str) -> bool:
+    raw = str(host or "").strip().lower()
+    if not raw:
+        return False
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1].strip()
+    if raw == "localhost":
+        return False
+    if raw in {"0.0.0.0", "::"}:
+        return True
+    try:
+        return not ipaddress.ip_address(raw).is_loopback
+    except ValueError:
+        return True
+
+def assert_public_bind_allowed(bind: str, access_token: str):
+    if not is_public_host(bind):
+        return
+    if str(access_token or "").strip():
+        return
+    raise SystemExit(
+        f'Refusing to bind SessionWatcher to public host "{bind}" without '
+        "SESSIONWATCHER_ACCESS_TOKEN. Set SESSIONWATCHER_ACCESS_TOKEN or bind to 127.0.0.1/::1/localhost."
+    )
+
+def parse_cookies(header: str | None) -> dict[str, str]:
+    raw = str(header or "")
+    cookies: dict[str, str] = {}
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        cookies[key] = value.strip()
+    return cookies
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -475,12 +519,108 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # suppress default access log
 
+    def _access_token(self) -> str:
+        return str(getattr(self.server, "access_token", "") or "").strip()
+
+    def _auth_enabled(self) -> bool:
+        return bool(self._access_token())
+
+    def _is_authorized(self) -> bool:
+        if not self._auth_enabled():
+            return True
+        cookies = parse_cookies(self.headers.get("Cookie"))
+        return cookies.get(ACCESS_COOKIE_NAME) == self._access_token()
+
+    def _send_auth_error(self, api_request: bool, message: str, status: int = 401):
+        if api_request:
+            self.send_json({
+                "error": message,
+                "auth_required": True,
+                "auth_mode": "access_token",
+                "bootstrap": f"/?{ACCESS_QUERY_PARAM}=...",
+            }, status=status)
+            return
+
+        body = f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>SessionWatcher Access Required</title>
+  <style>
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0b0f17; color: #e8edf7; display: grid; place-items: center; min-height: 100vh; }}
+    .card {{ width: min(560px, calc(100vw - 32px)); background: #121826; border: 1px solid #27324a; border-radius: 18px; padding: 24px; box-shadow: 0 18px 48px rgba(0,0,0,.35); }}
+    h1 {{ margin: 0 0 12px; font-size: 22px; }}
+    p {{ margin: 0 0 12px; line-height: 1.5; color: #c6d0e1; }}
+    code {{ background: #0b1220; padding: 2px 6px; border-radius: 6px; color: #8dd3ff; }}
+  </style>
+</head>
+<body>
+  <div class=\"card\">
+    <h1>🔐 SessionWatcher access required</h1>
+    <p>{message}</p>
+    <p>Open this page once with <code>/?{ACCESS_QUERY_PARAM}=YOUR_TOKEN</code> to store the access cookie.</p>
+  </div>
+</body>
+</html>""".encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _maybe_handle_access_gate(self, parsed, path: str) -> bool:
+        if not self._auth_enabled():
+            return False
+
+        provided = None
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == ACCESS_QUERY_PARAM:
+                provided = value
+                break
+
+        api_request = path.startswith("/api/")
+
+        if provided is not None:
+            if provided != self._access_token():
+                self._send_auth_error(api_request, "Invalid SessionWatcher access token.")
+                return True
+
+            filtered_query = [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key != ACCESS_QUERY_PARAM
+            ]
+            location = parsed.path or "/"
+            if filtered_query:
+                location = f"{location}?{urlencode(filtered_query, doseq=True)}"
+
+            self.send_response(302)
+            self.send_header(
+                "Set-Cookie",
+                f"{ACCESS_COOKIE_NAME}={self._access_token()}; HttpOnly; Path=/; SameSite=Lax",
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Location", location)
+            self.end_headers()
+            return True
+
+        if self._is_authorized():
+            return False
+
+        self._send_auth_error(
+            api_request,
+            "SessionWatcher access token required. Open /?access_token=... once to continue.",
+        )
+        return True
+
     def send_json(self, data: dict | list, status: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -490,6 +630,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
         except FileNotFoundError:
@@ -498,6 +639,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path   = parsed.path.rstrip("/") or "/"
+
+        if self._maybe_handle_access_gate(parsed, path):
+            return
 
         if path == "/" or path == "/index.html":
             self.send_html(Path(__file__).parent / "index.html")
@@ -577,10 +721,19 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def do_OPTIONS(self):
+        parsed = urlparse(self.path)
+        path   = parsed.path.rstrip("/") or "/"
+        if self._maybe_handle_access_gate(parsed, path):
+            return
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET")
+        self.send_header("Allow", "GET, OPTIONS")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
+
+
+class SessionwatcherHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -589,12 +742,26 @@ def main():
     parser = argparse.ArgumentParser(description="Sessionwatcher server")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--bind", default=DEFAULT_BIND)
+    parser.add_argument("--access-token", default=DEFAULT_ACCESS_TOKEN)
     args = parser.parse_args()
 
-    server = HTTPServer((args.bind, args.port), Handler)
+    access_token = str(args.access_token or "").strip()
+    assert_public_bind_allowed(args.bind, access_token)
+
+    server = SessionwatcherHTTPServer((args.bind, args.port), Handler)
+    server.access_token = access_token
     url = f"http://{args.bind}:{args.port}"
     print(f"Sessionwatcher running → {url}")
     print(f"OpenClaw dir: {OPENCLAW_DIR}")
+    if access_token:
+        print("Access protection: enabled")
+        print(f"Bootstrap login: {url}/?{ACCESS_QUERY_PARAM}=<token>")
+    if args.bind == "0.0.0.0":
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+            print(f"LAN access: http://{local_ip}:{args.port}")
+        except Exception:
+            pass
     print("Ctrl-C to stop")
     try:
         server.serve_forever()
