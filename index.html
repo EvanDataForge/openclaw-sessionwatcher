@@ -30,6 +30,21 @@
     --type-other:    var(--muted);
   }
 
+  body.light {
+    --bg:       #f3f5fa;
+    --surface:  #ffffff;
+    --border:   #d6dbe7;
+    --text:     #1f2937;
+    --muted:    #6b7280;
+    --accent:   #2563eb;
+    --green:    #16a34a;
+    --orange:   #d97706;
+    --red:      #dc2626;
+    --purple:   #7c3aed;
+    --teal:     #0f766e;
+    --yellow:   #ca8a04;
+  }
+
   html, body { height: 100%; }
   body {
     background: var(--bg);
@@ -99,6 +114,33 @@
     transition: border-color .15s, color .15s;
   }
   #refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  #theme-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+    padding: 0;
+    width: 31px;
+    height: 25px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: inherit;
+    transition: border-color .15s, color .15s;
+  }
+  #theme-btn:hover { border-color: var(--accent); color: var(--accent); }
+  #theme-btn svg {
+    width: 15px;
+    height: 15px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+  }
 
   #body {
     display: flex;
@@ -301,6 +343,65 @@
   }
   .msg-bubble.user      { align-self: flex-end;   align-items: flex-end;   max-width: 72%; }
   .msg-bubble.assistant { align-self: flex-start;  align-items: flex-start; }
+  .msg-bubble.system-entry {
+    align-items: stretch;
+    gap: 0;
+    width: min(92%, 1200px);
+    max-width: 92%;
+  }
+
+  .msg-system-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    padding: 10px 12px;
+    background: rgba(255,255,255,.03);
+    border: 1px solid rgba(255,255,255,.08);
+    border-left: 3px solid rgba(166,123,255,.45);
+    border-radius: 0;
+    overflow: visible;
+  }
+  .msg-bubble.system-entry[data-role="toolresult"] .msg-system-shell {
+    border-left-color: rgba(62,207,110,.45);
+  }
+  .msg-bubble.system-entry .msg-header,
+  .msg-bubble.system-entry .msg-footer {
+    padding: 0;
+  }
+  .msg-bubble.system-entry .msg-body,
+  .msg-bubble.system-entry .block-thinking,
+  .msg-bubble.system-entry .block-toolcall,
+  .msg-bubble.system-entry .block-toolresult,
+  .msg-bubble.system-entry .thinking-only-warning {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+  }
+  .msg-bubble.system-entry .msg-body {
+    background: rgba(255,255,255,.04);
+    border-color: rgba(255,255,255,.08);
+    border-radius: 0;
+  }
+  .msg-bubble.system-entry .block-toolcall,
+  .msg-bubble.system-entry .block-toolresult {
+    margin-bottom: 0;
+  }
+
+  body.light .msg-system-shell {
+    background: rgba(15,23,42,.03);
+    border-color: rgba(15,23,42,.12);
+    border-left-color: rgba(124,58,237,.32);
+  }
+  body.light .msg-bubble.system-entry[data-role="toolresult"] .msg-system-shell {
+    border-left-color: rgba(34,197,94,.38);
+  }
+  body.light .msg-bubble.system-entry .msg-body {
+    background: rgba(15,23,42,.03);
+    border-color: rgba(15,23,42,.1);
+  }
 
   .msg-header {
     display: flex;
@@ -378,6 +479,17 @@
     background: rgba(255,255,255,.055);
     border-color: rgba(255,255,255,.09);
     border-radius: 18px 18px 18px 5px;
+  }
+
+  body.light .msg-bubble.user .msg-body {
+    background: rgba(37,99,235,.14);
+    border-color: rgba(37,99,235,.25);
+    color: #1e3a8a;
+  }
+  body.light .msg-bubble.assistant .msg-body {
+    background: rgba(15,23,42,.04);
+    border-color: rgba(15,23,42,.10);
+    color: var(--text);
   }
 
   /* ── Session event markers ── */
@@ -540,6 +652,9 @@
     color: var(--muted);
     white-space: pre-wrap;
     word-break: break-word;
+    max-height: none;
+    overflow: visible;
+    height: auto;
   }
   .block-toolresult {
     background: rgba(62,207,110,.05);
@@ -568,8 +683,9 @@
     color: var(--muted);
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 120px;
-    overflow-y: auto;
+    max-height: none;
+    overflow: visible;
+    height: auto;
   }
   .show-all-btn {
     display: inline-block;
@@ -753,6 +869,8 @@
   }
   .burger-item:hover { background: rgba(255,255,255,.05); }
 
+  body.light .burger-item:hover { background: rgba(15,23,42,.05); }
+
   /* ── About modal ── */
   #about-modal {
     display: none;
@@ -774,6 +892,9 @@
     box-shadow: 0 12px 40px rgba(0,0,0,.5);
     position: relative;
   }
+  body.light #burger-menu { box-shadow: 0 6px 20px rgba(15,23,42,.12); }
+  body.light #about-modal { background: rgba(15,23,42,.32); }
+  body.light #about-box { box-shadow: 0 12px 40px rgba(15,23,42,.14); }
   #about-box h2 { font-size: 16px; font-weight: 700; color: var(--accent); margin: 0 0 6px; }
   #about-box .about-sub { font-size: 11px; color: var(--muted); margin: 0 0 18px; }
   #about-box p { font-size: 12px; color: var(--fg); line-height: 1.7; margin: 0 0 10px; }
@@ -804,6 +925,7 @@
   <div id="hdr-right" style="display:flex;align-items:center;gap:8px;margin-left:auto">
     <div id="refresh-info"></div>
     <button id="refresh-btn" onclick="App.refresh()">↻ Refresh</button>
+    <button id="theme-btn" onclick="Theme.toggle()" title="Light/Dark umschalten" aria-label="Light/Dark umschalten"></button>
     <div id="burger-wrap">
       <button id="burger-btn" onclick="Menu.toggle()" title="Menu">☰</button>
       <div id="burger-menu">
@@ -922,6 +1044,39 @@ const API = {
     const r = await fetch(`/api/sessions/${sessionId}/messages`);
     if (!r.ok) throw new Error('API error');
     return r.json();
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Theme toggle
+// ─────────────────────────────────────────────────────────────────────────────
+const Theme = {
+  storageKey: 'sessionwatcher-theme',
+  icons: {
+    sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2.5v2.5M12 19v2.5M21.5 12H19M5 12H2.5M18.72 5.28l-1.77 1.77M7.05 16.95l-1.77 1.77M18.72 18.72l-1.77-1.77M7.05 7.05 5.28 5.28"></path></svg>',
+    moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.2A8.5 8.5 0 0 1 9.8 4 9 9 0 1 0 20 14.2Z"></path></svg>',
+  },
+
+  init() {
+    const saved = localStorage.getItem(this.storageKey);
+    this.apply(saved === 'light' ? 'light' : 'dark');
+  },
+
+  toggle() {
+    const next = document.body.classList.contains('light') ? 'dark' : 'light';
+    this.apply(next);
+    localStorage.setItem(this.storageKey, next);
+  },
+
+  apply(mode) {
+    const isLight = mode === 'light';
+    document.body.classList.toggle('light', isLight);
+    const btn = document.getElementById('theme-btn');
+    if (btn) {
+      btn.innerHTML = isLight ? this.icons.sun : this.icons.moon;
+      btn.title = isLight ? 'Zu Dark Mode wechseln' : 'Zu Light Mode wechseln';
+      btn.setAttribute('aria-label', btn.title);
+    }
   },
 };
 
@@ -1172,6 +1327,25 @@ function stopBadge(reason) {
   return `<span class="stop-badge ${cls}">${esc(label)}</span>`;
 }
 
+function getMeaningfulBlocks(message) {
+  return (message.blocks || []).filter(block => {
+    if (!block || !block.kind) return false;
+    if (block.kind === 'text') return !!(block.text || '').trim();
+    if (block.kind === 'thinking') return block.encrypted === true || !!(block.text || '').trim();
+    if (block.kind === 'toolCall' || block.kind === 'toolResult') return true;
+    return true;
+  });
+}
+
+function isPureTextMessage(message) {
+  if (message.role !== 'assistant') return false;
+  const blocks = getMeaningfulBlocks(message);
+  if (blocks.length > 0) {
+    return blocks.length === 1 && blocks[0].kind === 'text';
+  }
+  return !!(message.text || '').trim();
+}
+
 function syntaxHighlight(str) {
   let obj;
   try { obj = JSON.parse(str); } catch(e) { return esc(str); }
@@ -1245,7 +1419,7 @@ function renderBlock(b, key, entryId) {
       ? `<button class="show-all-btn" data-akey="${esc(aKey)}" onclick="expandArgs('${esc(aKey)}')">(show all)</button>` : '';
     return `<div class="block-toolcall">
       <div class="block-toolcall-header">⚙ Tool call: <strong>${esc(b.name)}</strong></div>
-      <div class="block-toolcall-args" data-akey="${esc(aKey)}" style="max-height:120px;overflow-y:auto">${escText(preview)}</div>${showAllBtn}
+      <div class="block-toolcall-args" data-akey="${esc(aKey)}">${escText(preview)}</div>${showAllBtn}
     </div>`;
   }
   if (b.kind === 'toolResult') {
@@ -1260,7 +1434,7 @@ function renderBlock(b, key, entryId) {
       ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" data-eid="${esc(entryId||'')}" onclick="fetchAndShowFull(this)">(show all)</button>` : '';
     return `<div class="block-toolresult${errClass}">
       <div class="block-toolresult-header">${icon} Result: <strong>${esc(b.name)}</strong><span style="font-weight:400;color:var(--muted)">${chars}</span></div>
-      <div class="block-toolresult-preview" data-trkey="${esc(trKey)}" style="${alreadyExpanded?'':'max-height:120px;overflow-y:auto'}">${escText(displayText)}</div>${showAllBtn}
+      <div class="block-toolresult-preview" data-trkey="${esc(trKey)}">${escText(displayText)}</div>${showAllBtn}
     </div>`;
   }
   if (b.kind === 'text' && b.text) {
@@ -1311,6 +1485,7 @@ function renderMessages(messages) {
     // ── toolResult / assistant: original full rendering ──
     const isToolResult = m.role === 'toolResult';
     const roleClass = m.role === 'user' ? 'user' : (isToolResult ? 'toolresult' : 'assistant');
+    const isSystemEntry = isToolResult || !isPureTextMessage(m);
 
     let roleLabel = m.role;
     if (isToolResult) roleLabel = `result:${m.tool_name}`;
@@ -1331,7 +1506,7 @@ function renderMessages(messages) {
         ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" data-eid="${esc(m.id||'')}" onclick="fetchAndShowFull(this)">(show all)</button>` : '';
       bodyHtml = `<div class="block-toolresult${errClass}" style="margin:0">
         <div class="block-toolresult-header">${m.is_error?'✗':'✓'} ${esc(m.tool_name)}<span style="font-weight:400;color:var(--muted)">${chars}</span></div>
-        <div class="block-toolresult-preview" data-trkey="${esc(trKey)}" style="${alreadyExpanded?'':'max-height:120px;overflow-y:auto'}">${escText(displayText)}</div>${showAllBtn}
+        <div class="block-toolresult-preview" data-trkey="${esc(trKey)}">${escText(displayText)}</div>${showAllBtn}
       </div>`;
     } else if (m.blocks && m.blocks.length > 0) {
       bodyHtml = m.blocks.map((b, bi) => {
@@ -1369,16 +1544,30 @@ function renderMessages(messages) {
       return `<div class="thinking-only-warning">⚠ Stopped after thinking — no text or tool call produced (stopReason: ${esc(m.stop_reason || 'unknown')})</div>`;
     })() : '';
 
+    const headerHtml = `<div class="msg-header">
+      <span class="msg-role ${isToolResult ? 'assistant' : roleClass}" style="${isToolResult ? 'color:var(--green)' : ''}">${esc(roleLabel)}</span>
+      ${modelInfo}${errBadge}${stopBadgeHtml}
+      ${m.id ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="Copy ID">⧉</button><button class="copy-btn" onclick="openRawModal(${idx})" title="View raw JSON">{raw}</button></span>` : ''}
+      <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
+    </div>`;
+    const footerHtml = tokInfo ? `<div class="msg-footer">${tokInfo}</div>` : '';
+
+    if (isSystemEntry) {
+      return `<div class="msg-bubble assistant system-entry" data-msgidx="${idx}"${isToolResult ? ' data-role="toolresult"' : ''}>
+        <div class="msg-system-shell">
+          ${headerHtml}
+          ${bodyHtml}
+          ${thinkingOnlyWarning}
+          ${footerHtml}
+        </div>
+      </div>`;
+    }
+
     return `<div class="msg-bubble ${isToolResult ? 'assistant' : roleClass}" data-msgidx="${idx}"${isToolResult ? ' data-role="toolresult"' : ''}>
-      <div class="msg-header">
-        <span class="msg-role ${isToolResult ? 'assistant' : roleClass}" style="${isToolResult ? 'color:var(--green)' : ''}">${esc(roleLabel)}</span>
-        ${modelInfo}${errBadge}${stopBadgeHtml}
-        ${m.id ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="Copy ID">⧉</button><button class="copy-btn" onclick="openRawModal(${idx})" title="View raw JSON">{raw}</button></span>` : ''}
-        <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
-      </div>
+      ${headerHtml}
       ${bodyHtml}
       ${thinkingOnlyWarning}
-      ${tokInfo ? `<div class="msg-footer">${tokInfo}</div>` : ''}
+      ${footerHtml}
     </div>`;
   }).join('');
 
@@ -1395,6 +1584,7 @@ function renderMessages(messages) {
 const App = {
 
   async init() {
+    Theme.init();
     Scroll.init();
     await this.refresh();
     this.startCountdown();

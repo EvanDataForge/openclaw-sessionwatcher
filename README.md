@@ -11,15 +11,17 @@ A lightweight local agent session monitor for watching live OpenClaw sessions in
 Sessionwatcher reads the JSONL session logs written by OpenClaw agents and presents them as a live, auto-refreshing web UI. It gives you a bird's-eye view of all active and recent sessions, and lets you drill into individual conversations to inspect messages, tool calls, thinking blocks, and more — without having to tail log files manually.
 
 <img width="1358" height="678" alt="image" src="https://github.com/user-attachments/assets/dc373026-1733-4622-94f7-2a795b1f2806" />  
-with optional light mode:  
+Dark mode is the default. An optional light mode is available for brighter environments:  
 <img width="1357" height="679" alt="image" src="https://github.com/user-attachments/assets/1076800a-dc78-48fe-b870-f089cd3cf4dd" />  
 
 **Features:**
 
+- Built-in light mode and dark mode for the full UI
 - Session list with status indicators (active / stopped / stale)
 - Per-session message stream with structured rendering:
   - WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
   - User & assistant text messages (with `\n` → line break support)
+  - Grouped **system-entry bubbles** for non-text assistant/internal records, so headers, thinking, tool calls, tool results, and token stats stay visually connected
   - Thinking blocks (individually collapsible; notice shown when Anthropic encrypts content)
   - ⚙ Tool calls with arguments (truncated at 300 chars with inline **show all**)
   - ✓/✗ Tool results with trimmed preview + **(show all)** — fetched on demand, persists across auto-refresh
@@ -151,7 +153,7 @@ Assistant messages are further decomposed into typed blocks:
 
 ### Frontend
 
-`index.html` is a self-contained single-file app (vanilla JS, no framework, no external CDN calls). State is managed in a plain `State` object. Auto-refresh calls the API every 10 seconds and patches only changed sections to avoid flicker. Expanded tool result content is cached client-side and survives auto-refresh cycles.
+`index.html` is a self-contained single-file app (vanilla JS, no framework, no external CDN calls). It supports both light and dark themes, keeps plain chat messages in their existing chat-bubble layout, and groups non-text assistant/tool activity into distinct system-entry containers for easier scanning. State is managed in a plain `State` object. Auto-refresh calls the API every 10 seconds and patches only changed sections to avoid flicker. Expanded tool result content is cached client-side and survives auto-refresh cycles.
 
 ---
 
