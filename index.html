@@ -336,6 +336,31 @@
     gap: 3px;
     max-width: 92%;
   }
+  .msg-bubble.entry-new,
+  .msg-event.entry-new {
+    animation: entry-in .2s ease-out;
+  }
+  .msg-bubble.entry-updated,
+  .msg-event.entry-updated {
+    animation: entry-update .38s ease-out;
+  }
+  @keyframes entry-in {
+    from { opacity: 0; transform: translateY(5px) scale(.995); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes entry-update {
+    0%   { box-shadow: 0 0 0 0 rgba(79,142,247,0); }
+    35%  { box-shadow: 0 0 0 1px rgba(79,142,247,.45), 0 0 0 4px rgba(79,142,247,.14); }
+    100% { box-shadow: 0 0 0 0 rgba(79,142,247,0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .msg-bubble.entry-new,
+    .msg-bubble.entry-updated,
+    .msg-event.entry-new,
+    .msg-event.entry-updated {
+      animation: none;
+    }
+  }
   .msg-bubble.user      { align-self: flex-end;   align-items: flex-end;   max-width: 72%; }
   .msg-bubble.assistant { align-self: flex-start;  align-items: flex-start; }
   .msg-bubble.system-entry {
@@ -1030,6 +1055,7 @@ const State = {
   detailFallbackTimer: null,
   detailFallbackStep: 0,
   detailLoadToken: 0,
+  detailEntrySignatures: {},
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1241,6 +1267,59 @@ function isRecent(s) {
   const nowMs = Date.now();
   // s.updated_at is epoch ms
   return (nowMs - (s.updated_at || 0)) < 10 * 60 * 1000;
+}
+
+function getMessageKey(message, idx) {
+  if (message?.id) return `id:${message.id}`;
+  return `idx:${idx}|role:${message?.role || ''}|ts:${message?.ts_fmt || ''}|event:${message?.event_type || ''}`;
+}
+
+function getMessageSignature(message) {
+  const blocksSig = Array.isArray(message?.blocks)
+    ? message.blocks.map(block => JSON.stringify({
+        kind: block?.kind,
+        text: block?.text,
+        name: block?.name,
+        args: block?.args,
+        encrypted: block?.encrypted,
+        is_error: block?.is_error,
+        total_chars: block?.total_chars,
+      })).join('|')
+    : '';
+
+  return JSON.stringify({
+    role: message?.role,
+    text: message?.text,
+    ts_fmt: message?.ts_fmt,
+    event_type: message?.event_type,
+    stop_reason: message?.stop_reason,
+    model: message?.model,
+    tool_name: message?.tool_name,
+    is_error: message?.is_error,
+    total_chars: message?.total_chars,
+    blocksSig,
+  });
+}
+
+function buildEntryTransitions(messages, prevSignatures = {}) {
+  const nextSignatures = {};
+  const transitions = {};
+
+  messages.forEach((message, idx) => {
+    const key = getMessageKey(message, idx);
+    const signature = getMessageSignature(message);
+    const prev = prevSignatures[key];
+
+    nextSignatures[key] = signature;
+
+    if (prev === undefined) {
+      transitions[key] = 'entry-new';
+    } else if (prev !== signature) {
+      transitions[key] = 'entry-updated';
+    }
+  });
+
+  return { nextSignatures, transitions };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1476,7 +1555,7 @@ function renderBlock(b, key, entryId) {
   return '';
 }
 
-function renderMessages(messages) {
+function renderMessages(messages, transitions = {}) {
   const el = document.getElementById('messages');
   // Clear caches
   Object.keys(RawStore).forEach(k => delete RawStore[k]);
@@ -1491,10 +1570,13 @@ function renderMessages(messages) {
   }
 
   el.innerHTML = messages.map((m, idx) => {
+    const key = getMessageKey(m, idx);
+    const transitionClass = transitions[key] ? ` ${transitions[key]}` : '';
+
     // ── Event markers (thinking/model change) ──
     if (m.role === 'event') {
       RawStore[idx] = m.raw_json || '';
-      return `<div class="msg-event ev-${esc(m.event_type)}" data-msgidx="${idx}">
+      return `<div class="msg-event ev-${esc(m.event_type)}${transitionClass}" data-msgidx="${idx}">
         <span class="ev-tag">⚡ ${esc(m.text)}</span>
         <span class="ev-time">${esc(m.ts_fmt)}</span>
       </div>`;
@@ -1505,7 +1587,7 @@ function renderMessages(messages) {
       const text = m.text || (m.blocks||[]).filter(b=>b.kind==='text').map(b=>b.text).join('\n') || '';
       RawStore[idx] = m.raw_json || '';
       if (!text.trim()) return '';
-      return `<div class="msg-bubble user" data-msgidx="${idx}">
+      return `<div class="msg-bubble user${transitionClass}" data-msgidx="${idx}">
         <div class="msg-header">
           <span class="msg-role user">You</span>
           <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
@@ -1586,7 +1668,7 @@ function renderMessages(messages) {
     const footerHtml = tokInfo ? `<div class="msg-footer">${tokInfo}</div>` : '';
 
     if (isSystemEntry) {
-      return `<div class="msg-bubble assistant system-entry" data-msgidx="${idx}"${isToolResult ? ' data-role="toolresult"' : ''}>
+      return `<div class="msg-bubble assistant system-entry${transitionClass}" data-msgidx="${idx}"${isToolResult ? ' data-role="toolresult"' : ''}>
         <div class="msg-system-shell">
           ${headerHtml}
           ${bodyHtml}
@@ -1596,7 +1678,7 @@ function renderMessages(messages) {
       </div>`;
     }
 
-    return `<div class="msg-bubble ${isToolResult ? 'assistant' : roleClass}" data-msgidx="${idx}"${isToolResult ? ' data-role="toolresult"' : ''}>
+    return `<div class="msg-bubble ${isToolResult ? 'assistant' : roleClass}${transitionClass}" data-msgidx="${idx}"${isToolResult ? ' data-role="toolresult"' : ''}>
       ${headerHtml}
       ${bodyHtml}
       ${thinkingOnlyWarning}
@@ -1863,6 +1945,7 @@ const App = {
     // Clear expanded state when switching to a different session
     if (State.detailSessionId !== s.session_id) {
       Object.keys(ExpandedFull).forEach(k => delete ExpandedFull[k]);
+      State.detailEntrySignatures = {};
     }
 
     const msgEl = document.getElementById('messages');
@@ -1888,10 +1971,15 @@ const App = {
       State.authError = null;
       const msgs = data.messages || [];
       const newCount = msgs.length;
-      const changed = newCount !== prevCount;
+
+      const prevSignatures = isSameSession ? (State.detailEntrySignatures || {}) : {};
+      const { nextSignatures, transitions: allTransitions } = buildEntryTransitions(msgs, prevSignatures);
+      const renderTransitions = (isRefresh && isSameSession) ? allTransitions : {};
+      const changed = newCount !== prevCount || Object.keys(allTransitions).length > 0;
 
       State.detailSessionId = s.session_id;
       State.lastMsgCount    = newCount;
+      State.detailEntrySignatures = nextSignatures;
 
       // Update last activity time in header
       const now = new Date();
@@ -1899,7 +1987,7 @@ const App = {
       const icon = source === 'refresh' ? ' ↻' : (source === 'sse' || source === 'fallback') ? ' •' : '';
       document.getElementById('hdr-time').textContent = timeStr + icon;
 
-      renderMessages(msgs);
+      renderMessages(msgs, renderTransitions);
 
       if (isRefresh && isSameSession) {
         // Restore position if no new messages came in, else smart scroll

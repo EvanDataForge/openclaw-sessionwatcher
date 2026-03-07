@@ -22,6 +22,7 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
   - User & assistant text messages (with `\n` → line break support)
   - Grouped **system-entry bubbles** for non-text assistant/internal records, so headers, thinking, tool calls, tool results, and token stats stay visually connected
+  - Smooth entry transitions in the selected session: newly arriving entries fade in quickly, and changed entries (text/tool/event updates) get a brief highlight pulse
   - Thinking blocks (individually collapsible; notice shown when Anthropic encrypts content)
   - ⚙ Tool calls with arguments (truncated at 300 chars with inline **show all**)
   - ✓/✗ Tool results with trimmed preview + **(show all)** — fetched on demand, persists across auto-refresh
@@ -242,6 +243,7 @@ Assistant messages are further decomposed into typed blocks:
 **Live Updates:**
 - Selected session opens an SSE stream (`/api/sessions/:id/events`) that pushes `changed` events when the JSONL file grows
 - Detail panel reloads messages immediately on push notification (typically <1s after new log entry)
+- Entry-level diffing tracks stable message/event signatures so only new or actually changed entries animate (no transition spam on initial load)
 - If SSE fails or is unsupported, adaptive polling starts: 500ms → 1s → 2s → 4s → 8s, max 10s between retries
 - Session list still refreshes every 10 seconds via classic polling
 - Expanded tool result content is cached client-side and survives auto-refresh cycles
