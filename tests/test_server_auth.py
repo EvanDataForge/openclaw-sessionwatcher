@@ -136,6 +136,51 @@ class ServerProcessMixin:
         conn.close()
         return status, headers_map, body
 
+    def open_stream(self, path, headers=None, timeout=5):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
+        conn.request("GET", path, headers=headers or {})
+        resp = conn.getresponse()
+        return conn, resp
+
+    def read_sse_event(self, resp, timeout=3):
+        deadline = time.time() + timeout
+        lines = []
+
+        while time.time() < deadline:
+            try:
+                raw = resp.fp.readline()
+            except socket.timeout:
+                continue
+
+            if not raw:
+                raise AssertionError("SSE stream closed before event was received")
+
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                if lines:
+                    break
+                continue
+            if line.startswith(":"):
+                continue
+            lines.append(line)
+
+        if not lines:
+            raise AssertionError("Timed out waiting for SSE event")
+
+        event_name = "message"
+        data_lines = []
+        for line in lines:
+            if line.startswith("event:"):
+                event_name = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].lstrip())
+
+        payload = {}
+        if data_lines:
+            payload = json.loads("\n".join(data_lines))
+
+        return {"event": event_name, "data": payload}
+
 
 class TestLoopbackWithoutToken(ServerProcessMixin, unittest.TestCase):
     @classmethod
@@ -165,6 +210,13 @@ class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
     def tearDownClass(cls):
         cls.stop_server()
 
+    def _bootstrap_cookie(self):
+        status, headers, _body = self.request(f"/?access_token={self.TOKEN}")
+        self.assertEqual(status, 302)
+        cookie_header = headers.get("Set-Cookie", "")
+        self.assertIn("sessionwatcher_access=" + self.TOKEN, cookie_header)
+        return cookie_header.split(";", 1)[0]
+
     def test_root_requires_token_before_cookie_bootstrap(self):
         status, headers, body = self.request("/")
         self.assertEqual(status, 401)
@@ -173,6 +225,14 @@ class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
 
     def test_api_requires_cookie_when_token_enabled(self):
         status, headers, body = self.request("/api/status")
+        self.assertEqual(status, 401)
+        self.assertNotEqual(headers.get("Access-Control-Allow-Origin"), "*")
+        data = json.loads(body)
+        self.assertTrue(data["auth_required"])
+        self.assertIn("access_token", data["bootstrap"])
+
+    def test_sse_requires_cookie_when_token_enabled(self):
+        status, headers, body = self.request("/api/sessions/sess-1/events")
         self.assertEqual(status, 401)
         self.assertNotEqual(headers.get("Access-Control-Allow-Origin"), "*")
         data = json.loads(body)
@@ -204,6 +264,68 @@ class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
         self.assertEqual(status4, 200)
         self.assertNotEqual(headers4.get("Access-Control-Allow-Origin"), "*")
         self.assertEqual(json.loads(body4)["count"], 1)
+
+    def test_sse_stream_opens_with_cookie_and_emits_ready(self):
+        cookie = self._bootstrap_cookie()
+        conn, resp = self.open_stream(
+            "/api/sessions/sess-1/events",
+            headers={"Cookie": cookie},
+            timeout=5,
+        )
+        try:
+            self.assertEqual(resp.status, 200)
+            content_type = resp.getheader("Content-Type", "")
+            self.assertTrue(content_type.startswith("text/event-stream"))
+
+            event = self.read_sse_event(resp, timeout=3)
+            self.assertEqual(event["event"], "ready")
+            self.assertEqual(event["data"].get("session_id"), "sess-1")
+        finally:
+            conn.close()
+
+    def test_sse_emits_changed_after_jsonl_append(self):
+        cookie = self._bootstrap_cookie()
+        conn, resp = self.open_stream(
+            "/api/sessions/sess-1/events",
+            headers={"Cookie": cookie},
+            timeout=5,
+        )
+
+        try:
+            ready = self.read_sse_event(resp, timeout=3)
+            self.assertEqual(ready["event"], "ready")
+
+            jsonl = Path(self.tempdir.name) / "agents" / "main" / "sessions" / "sess-1.jsonl"
+            new_entry = {
+                "id": "entry-3",
+                "timestamp": "2026-03-07T12:00:09Z",
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "stream update"}],
+                    "model": "anthropic/claude-sonnet-4",
+                    "stopReason": "stop",
+                    "usage": {"input": 3, "output": 2, "cost": {"total": 42}},
+                },
+            }
+            with jsonl.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(new_entry) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            changed = None
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                event = self.read_sse_event(resp, timeout=1.2)
+                if event["event"] == "changed":
+                    changed = event
+                    break
+
+            self.assertIsNotNone(changed)
+            self.assertEqual(changed["data"].get("session_id"), "sess-1")
+            self.assertTrue(changed["data"].get("hint_new_messages"))
+        finally:
+            conn.close()
 
 
 class TestPublicBindPolicy(unittest.TestCase):

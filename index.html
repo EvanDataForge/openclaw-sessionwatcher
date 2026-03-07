@@ -97,11 +97,6 @@
   }
   .badge-stat strong { color: var(--text); }
 
-  #refresh-info {
-    margin-left: auto;
-    font-size: 11px;
-    color: var(--muted);
-  }
   #refresh-btn {
     background: transparent;
     border: 1px solid var(--border);
@@ -923,7 +918,6 @@
   <div class="badge-stat">Sessions: <strong id="hdr-count">…</strong></div>
   <div class="badge-stat">Last refresh: <strong id="hdr-time">…</strong></div>
   <div id="hdr-right" style="display:flex;align-items:center;gap:8px;margin-left:auto">
-    <div id="refresh-info"></div>
     <button id="refresh-btn" onclick="App.refresh()">↻ Refresh</button>
     <button id="theme-btn" onclick="Theme.toggle()" title="Light/Dark umschalten" aria-label="Light/Dark umschalten"></button>
     <div id="burger-wrap">
@@ -1030,6 +1024,12 @@ const State = {
   thinkingDefaultExpanded: true, // default for newly rendered blocks
   chatOnly: false,         // toggle: show only chat bubbles
   authError: null,
+  detailStream: null,
+  detailStreamSessionId: null,
+  detailStreamConnected: false,
+  detailFallbackTimer: null,
+  detailFallbackStep: 0,
+  detailLoadToken: 0,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1063,6 +1063,9 @@ const API = {
   },
   async messages(sessionId) {
     return this.request(`/api/sessions/${sessionId}/messages`);
+  },
+  eventsUrl(sessionId) {
+    return `/api/sessions/${sessionId}/events`;
   },
 };
 
@@ -1616,6 +1619,10 @@ const App = {
   async init() {
     Theme.init();
     Scroll.init();
+    window.addEventListener('beforeunload', () => {
+      this._closeDetailStream();
+      this._stopDetailFallback();
+    });
     await this.refresh();
     this.startCountdown();
   },
@@ -1625,7 +1632,6 @@ const App = {
     State.countdown = 10;
     State.timer = setInterval(() => {
       State.countdown--;
-      document.getElementById('refresh-info').textContent = `Auto-refresh in ${State.countdown}s`;
       if (State.countdown <= 0) {
         this.refresh();
         State.countdown = 10;
@@ -1661,7 +1667,7 @@ const App = {
       }
 
       document.getElementById('hdr-count').textContent = data.count ?? 0;
-      document.getElementById('hdr-time').textContent  = data.generated_fmt || '—';
+      document.getElementById('hdr-time').textContent  = (data.generated_fmt || '—') + ' ↻';
       document.getElementById('window-label').textContent = `last ${data.active_window_h}h`;
 
       renderSessionList();
@@ -1669,7 +1675,13 @@ const App = {
       // If a session was selected, refresh its messages too
       if (State.selectedId) {
         const still = State.sessions.find(s => s.session_id === State.selectedId);
-        if (still) await this._loadDetail(still, true);
+        if (
+          still
+          && !State.detailStreamConnected
+          && !State.detailFallbackTimer
+        ) {
+          await this._loadDetail(still, true, 'refresh');
+        }
       }
 
     } catch (e) {
@@ -1678,7 +1690,6 @@ const App = {
         State.authError = authMessage(e);
         renderAuthRequired(document.getElementById('session-list'), State.authError);
         renderAuthRequired(document.getElementById('messages'), State.authError);
-        document.getElementById('refresh-info').textContent = State.authError;
         document.getElementById('hdr-count').textContent = '0';
       }
       console.error('Refresh failed', e);
@@ -1709,6 +1720,10 @@ const App = {
   },
 
   async selectSession(sessionId) {
+    State.detailLoadToken++;
+    this._closeDetailStream();
+    this._stopDetailFallback();
+
     State.selectedId = sessionId;
     State.unread.delete(sessionId);
     // Update selected/unread highlight
@@ -1723,10 +1738,125 @@ const App = {
     const s = State.sessions.find(x => x.session_id === sessionId);
     if (!s) return;
 
-    await this._loadDetail(s);
+    await this._loadDetail(s, false, 'select');
+    this._openDetailStream(sessionId);
   },
 
-  async _loadDetail(s, isRefresh = false) {
+  _closeDetailStream() {
+    const stream = State.detailStream;
+    if (stream) {
+      try {
+        stream.close();
+      } catch (_) {}
+    }
+    State.detailStream = null;
+    State.detailStreamSessionId = null;
+    State.detailStreamConnected = false;
+  },
+
+  _stopDetailFallback() {
+    if (State.detailFallbackTimer) {
+      clearTimeout(State.detailFallbackTimer);
+      State.detailFallbackTimer = null;
+    }
+    State.detailFallbackStep = 0;
+  },
+
+  _scheduleDetailFallback(sessionId) {
+    if (State.selectedId !== sessionId || State.detailStreamConnected || State.detailFallbackTimer) {
+      return;
+    }
+
+    const delays = [500, 1000, 2000, 4000, 8000, 10000];
+    const idx = Math.min(State.detailFallbackStep, delays.length - 1);
+    const delay = delays[idx];
+
+    State.detailFallbackTimer = setTimeout(async () => {
+      State.detailFallbackTimer = null;
+
+      if (State.selectedId !== sessionId || State.detailStreamConnected) {
+        return;
+      }
+
+      const selected = State.sessions.find(x => x.session_id === sessionId);
+      if (!selected) {
+        return;
+      }
+
+      const changed = await this._loadDetail(selected, true, 'fallback');
+      if (changed) {
+        State.detailFallbackStep = 0;
+      } else {
+        State.detailFallbackStep = Math.min(State.detailFallbackStep + 1, delays.length - 1);
+      }
+
+      this._scheduleDetailFallback(sessionId);
+    }, delay);
+  },
+
+  _startDetailFallback(sessionId) {
+    if (State.selectedId !== sessionId || State.detailStreamConnected) {
+      return;
+    }
+    if (!State.detailFallbackTimer) {
+      State.detailFallbackStep = 0;
+      this._scheduleDetailFallback(sessionId);
+    }
+  },
+
+  _openDetailStream(sessionId) {
+    this._closeDetailStream();
+    this._stopDetailFallback();
+
+    if (!window.EventSource || State.selectedId !== sessionId) {
+      this._startDetailFallback(sessionId);
+      return;
+    }
+
+    let stream;
+    try {
+      stream = new EventSource(API.eventsUrl(sessionId), { withCredentials: true });
+    } catch (_) {
+      this._startDetailFallback(sessionId);
+      return;
+    }
+
+    State.detailStream = stream;
+    State.detailStreamSessionId = sessionId;
+
+    const onConnected = () => {
+      if (State.selectedId !== sessionId) {
+        return;
+      }
+      State.detailStreamConnected = true;
+      this._stopDetailFallback();
+    };
+
+    const onChanged = async () => {
+      if (State.selectedId !== sessionId) {
+        return;
+      }
+      const selected = State.sessions.find(x => x.session_id === sessionId);
+      if (!selected) {
+        return;
+      }
+      await this._loadDetail(selected, true, 'sse');
+    };
+
+    stream.onopen = onConnected;
+    stream.addEventListener('ready', onConnected);
+    stream.addEventListener('changed', onChanged);
+    stream.onerror = () => {
+      if (State.selectedId !== sessionId) {
+        return;
+      }
+      State.detailStreamConnected = false;
+      this._startDetailFallback(sessionId);
+    };
+  },
+
+  async _loadDetail(s, isRefresh = false, source = 'manual') {
+    const token = ++State.detailLoadToken;
     renderDetailHeader(s);
     renderDetailStats(s);
 
@@ -1750,12 +1880,24 @@ const App = {
 
     try {
       const data = await API.messages(s.session_id);
+
+      if (token !== State.detailLoadToken || State.selectedId !== s.session_id) {
+        return false;
+      }
+
       State.authError = null;
       const msgs = data.messages || [];
       const newCount = msgs.length;
+      const changed = newCount !== prevCount;
 
       State.detailSessionId = s.session_id;
       State.lastMsgCount    = newCount;
+
+      // Update last activity time in header
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
+      const icon = source === 'refresh' ? ' ↻' : (source === 'sse' || source === 'fallback') ? ' •' : '';
+      document.getElementById('hdr-time').textContent = timeStr + icon;
 
       renderMessages(msgs);
 
@@ -1778,16 +1920,20 @@ const App = {
         // Fresh load — scroll to bottom
         Scroll.toBottom();
       }
+      return changed;
     } catch(e) {
       if (e?.authRequired) {
         State.authError = authMessage(e);
         renderAuthRequired(msgEl, State.authError);
-        document.getElementById('refresh-info').textContent = State.authError;
+        if (source === 'fallback') {
+          this._stopDetailFallback();
+        }
         return;
       }
       if (!isRefresh || !isSameSession) {
         msgEl.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load messages</div></div>`;
       }
+      return false;
     }
   },
 };

@@ -512,10 +512,34 @@ def load_session_messages(session_id: str) -> list[dict]:
             return parse_messages(entries)
     return []
 
+def find_session_jsonl_path(session_id: str) -> Path | None:
+    """Resolve a session JSONL path by session_id across all agents."""
+    if not session_id:
+        return None
+    for agent_dir in AGENTS_DIR.iterdir():
+        if not agent_dir.is_dir():
+            continue
+        jsonl_path = agent_dir / "sessions" / f"{session_id}.jsonl"
+        if jsonl_path.exists():
+            return jsonl_path
+    return None
+
+def session_file_state(path: Path) -> dict | None:
+    """Return lightweight file state used to detect log updates."""
+    try:
+        st = path.stat()
+        return {
+            "last_mtime_ns": int(st.st_mtime_ns),
+            "last_size": int(st.st_size),
+        }
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
-
     def log_message(self, fmt, *args):
         pass  # suppress default access log
 
@@ -636,6 +660,85 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(404, "Not found")
 
+    def _sse_write(self, event: str, data: dict | None = None, retry_ms: int | None = None):
+        chunks = []
+        if retry_ms is not None:
+            chunks.append(f"retry: {int(retry_ms)}\n")
+        if event:
+            chunks.append(f"event: {event}\n")
+        if data is not None:
+            payload = json.dumps(data, ensure_ascii=False)
+            chunks.append(f"data: {payload}\n")
+        chunks.append("\n")
+        self.wfile.write("".join(chunks).encode("utf-8"))
+        self.wfile.flush()
+
+    def _stream_session_events(self, session_id: str):
+        jsonl_path = find_session_jsonl_path(session_id)
+        if not jsonl_path:
+            self.send_json({"error": "session not found"}, 404)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        poll_interval_s = 0.25
+        heartbeat_interval_s = 12.0
+        next_heartbeat = time.monotonic() + heartbeat_interval_s
+
+        seq = 0
+        prev_state = session_file_state(jsonl_path)
+        ready_payload = {
+            "session_id": session_id,
+            "hint_new_messages": False,
+            "seq": seq,
+            "last_mtime_ns": prev_state["last_mtime_ns"] if prev_state else None,
+            "last_size": prev_state["last_size"] if prev_state else None,
+        }
+
+        try:
+            self._sse_write("ready", ready_payload, retry_ms=1000)
+
+            while True:
+                now = time.monotonic()
+                current_state = session_file_state(jsonl_path)
+
+                # Only send changed event if file actually grew (new content)
+                grew = False
+                if prev_state and current_state:
+                    grew = current_state["last_size"] > prev_state["last_size"]
+                elif current_state and not prev_state:
+                    grew = True  # File appeared
+                
+                if grew:
+                    seq += 1
+                    changed_payload = {
+                        "session_id": session_id,
+                        "hint_new_messages": True,
+                        "seq": seq,
+                        "last_mtime_ns": current_state["last_mtime_ns"] if current_state else None,
+                        "last_size": current_state["last_size"] if current_state else None,
+                    }
+                    self._sse_write("changed", changed_payload)
+                
+                prev_state = current_state
+
+                if now >= next_heartbeat:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    next_heartbeat = now + heartbeat_interval_s
+
+                time.sleep(poll_interval_s)
+
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            return
+        except Exception:
+            return
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path   = parsed.path.rstrip("/") or "/"
@@ -663,6 +766,15 @@ class Handler(BaseHTTPRequestHandler):
                 session_id = parts[3]
                 msgs = load_session_messages(session_id)
                 self.send_json({"messages": msgs, "count": len(msgs)})
+            else:
+                self.send_json({"error": "invalid path"}, 400)
+
+        elif path.startswith("/api/sessions/") and path.endswith("/events"):
+            parts = path.split("/")
+            # /api/sessions/<id>/events
+            if len(parts) == 5:
+                session_id = parts[3]
+                self._stream_session_events(session_id)
             else:
                 self.send_json({"error": "invalid path"}, 400)
 

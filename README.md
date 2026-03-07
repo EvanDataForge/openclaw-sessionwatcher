@@ -32,7 +32,10 @@ Dark mode is the default. An optional light mode is available for brighter envir
 - Copy button for session/message IDs
 - Unread indicator (orange dot) for sessions with new messages
 - Smart scroll — stays at bottom during live updates, preserves position otherwise
-- Auto-refresh every 10 seconds with countdown
+- **Live push updates** via Server-Sent Events (SSE) — selected session updates typically <1s after new log entries
+  - Adaptive polling fallback (500ms → 1s → 2s → 4s → 8s → 10s) if SSE unavailable or disconnected
+  - Session list refreshes every 10 seconds in the background
+  - Update source indicator: `↻` for periodic refresh, `•` for live push
 - **Burger menu** (top right) — About dialog + Report an Issue (opens GitHub issue template chooser)
 - Zero external dependencies — pure Python stdlib + vanilla JS
 
@@ -199,6 +202,7 @@ Control commands:
   ┌─────────────────────────────┐
   │  GET /api/sessions          │  session list with stats
   │  GET /api/sessions/:id/messages            │  full message stream for one session
+  │  GET /api/sessions/:id/events              │  SSE stream for live file change notifications
   │  GET /api/sessions/:id/entry/:eid/full     │  full text of one entry (on demand)
   │  GET /api/status                           │  health check
   └─────────────────────────────┘
@@ -233,7 +237,14 @@ Assistant messages are further decomposed into typed blocks:
 
 ### Frontend
 
-`index.html` is a self-contained single-file app (vanilla JS, no framework, no external CDN calls). It supports both light and dark themes, keeps plain chat messages in their existing chat-bubble layout, and groups non-text assistant/tool activity into distinct system-entry containers for easier scanning. State is managed in a plain `State` object. Auto-refresh calls the API every 10 seconds and patches only changed sections to avoid flicker. Expanded tool result content is cached client-side and survives auto-refresh cycles.
+`index.html` is a self-contained single-file app (vanilla JS, no framework, no external CDN calls). It supports both light and dark themes, keeps plain chat messages in their existing chat-bubble layout, and groups non-text assistant/tool activity into distinct system-entry containers for easier scanning. State is managed in a plain `State` object.
+
+**Live Updates:**
+- Selected session opens an SSE stream (`/api/sessions/:id/events`) that pushes `changed` events when the JSONL file grows
+- Detail panel reloads messages immediately on push notification (typically <1s after new log entry)
+- If SSE fails or is unsupported, adaptive polling starts: 500ms → 1s → 2s → 4s → 8s, max 10s between retries
+- Session list still refreshes every 10 seconds via classic polling
+- Expanded tool result content is cached client-side and survives auto-refresh cycles
 
 ---
 
