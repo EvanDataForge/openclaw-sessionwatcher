@@ -21,12 +21,61 @@ LOG="$DIR/logs/server.log"
 
 mkdir -p "$DIR/logs"
 
-# Kill any existing instance
-EXISTING=$(lsof -ti tcp:$PORT 2>/dev/null || true)
+LAUNCH_LABEL="com.openclaw.sessionwatcher"
+LAUNCH_TARGET="gui/$(id -u)/$LAUNCH_LABEL"
+
+if [ "${SESSIONWATCHER_IGNORE_LAUNCHCTL:-0}" != "1" ] && launchctl print "$LAUNCH_TARGET" >/dev/null 2>&1; then
+  echo "LaunchAgent detected ($LAUNCH_LABEL); delegating start to launchctl..."
+  launchctl kickstart -k "$LAUNCH_TARGET" >/dev/null 2>&1 || true
+
+  for _ in {1..20}; do
+    LISTENER=$(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
+    if [ -n "$LISTENER" ]; then
+      break
+    fi
+    sleep 0.25
+  done
+
+  if [ -n "$LISTENER" ]; then
+    echo "✓ Running   → http://$BIND:$PORT"
+    if [ -n "$ACCESS_TOKEN" ]; then
+      echo "  Login URL  → http://$BIND:$PORT/?access_token=<your-token>"
+    fi
+    echo "  Logs      → $LOG"
+    echo "  Managed by launchctl. Control: $DIR/launchctl.sh {start|stop|restart|status|logs}"
+    exit 0
+  fi
+
+  echo "✗ LaunchAgent is loaded, but no listener appeared on port $PORT."
+  echo "  Check launchctl logs: $DIR/launchctl.sh logs"
+  exit 1
+fi
+
+# Kill any existing listener on the target port.
+# Use LISTEN-only lookup so we do not accidentally match client connections.
+EXISTING=$(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
 if [ -n "$EXISTING" ]; then
-  echo "Stopping existing process on port $PORT..."
-  kill "$EXISTING" 2>/dev/null || true
-  sleep 1
+  echo "Stopping existing listener(s) on port $PORT..."
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || true
+  done <<< "$EXISTING"
+
+  # Wait briefly until all listeners release the port.
+  for _ in {1..20}; do
+    REMAINING=$(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
+    if [ -z "$REMAINING" ]; then
+      break
+    fi
+    sleep 0.25
+  done
+
+  if [ -n "$REMAINING" ]; then
+    REMAINING_PIDS=$(echo "$REMAINING" | tr '\n' ' ')
+    echo "✗ Port $PORT is still in use by PID(s): $REMAINING_PIDS"
+    echo "  Hint: if launchctl auto-restart is enabled, run: $DIR/launchctl.sh stop"
+    exit 1
+  fi
 fi
 
 echo "Starting OpenClaw Session Watcher on http://$BIND:$PORT"
