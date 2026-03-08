@@ -1390,6 +1390,15 @@ function isRecent(s) {
   return (nowMs - (s.updated_at || 0)) < 10 * 60 * 1000;
 }
 
+function fmtTimeAgo(ms) {
+  if (!ms) return '';
+  const diff = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
 function getMessageKey(message, idx) {
   if (message?.id) return `id:${message.id}`;
   return `idx:${idx}|role:${message?.role || ''}|ts:${message?.ts_fmt || ''}|event:${message?.event_type || ''}`;
@@ -1480,6 +1489,7 @@ function renderSessionList() {
     const typeClass = `type-${s.type}`;
     const model = s.model && s.model !== '—' ? s.model : '';
     const modelShort = model.length > 22 ? model.slice(0,22)+'…' : model;
+    const timeAgo = fmtTimeAgo(s.updated_at) || s.time_ago || '—';
     const hasSubLabel = Boolean((s.label_sub || '').trim());
     const labelHtml = hasSubLabel
       ? `<span class="card-label-wrap"><span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span><span class="card-sub-label" title="${esc(s.label_sub)}">${esc(s.label_sub)}</span></span>`
@@ -1493,7 +1503,7 @@ function renderSessionList() {
       </div>
       <div class="card-row2">
         ${modelShort ? `<span class="card-model" title="${esc(model)}">${esc(modelShort)}</span><span class="card-sep">·</span>` : ''}
-        <span class="card-time">${esc(s.time_ago)}</span>
+        <span class="card-time">${esc(timeAgo)}</span>
         <span class="card-msgs">${s.msg_count ? `${s.msg_count} msgs` : '—'}</span>
       </div>
     </div>`;
@@ -1521,12 +1531,13 @@ function renderDetailHeader(s) {
 }
 
 function renderDetailStats(s) {
+  const timeAgo = fmtTimeAgo(s.updated_at) || s.time_ago || '—';
   const stats = document.getElementById('detail-stats');
   stats.style.display = 'flex';
   stats.innerHTML = `
     <div class="stat-item">
       <div class="stat-label">Last Activity</div>
-      <div class="stat-value accent">${esc(s.time_ago)}</div>
+      <div class="stat-value accent" id="detail-last-activity">${esc(timeAgo)}</div>
     </div>
     <div class="stat-item">
       <div class="stat-label">Messages</div>
@@ -1831,6 +1842,31 @@ function renderMessages(messages, transitions = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 const App = {
 
+  _parseIsoToMs(isoTs) {
+    if (!isoTs) return 0;
+    const ms = Date.parse(isoTs);
+    return Number.isFinite(ms) ? ms : 0;
+  },
+
+  _syncSessionSummaryFromMessages(sessionId, messages) {
+    if (!sessionId || !Array.isArray(messages)) return null;
+
+    const session = State.sessions.find(s => s.session_id === sessionId);
+    if (!session) return null;
+
+    const lastEntry = messages[messages.length - 1] || null;
+    const lastTsMs = this._parseIsoToMs(lastEntry?.ts_iso);
+    const nextUpdatedAt = Math.max(session.updated_at || 0, lastTsMs || 0);
+
+    session.updated_at = nextUpdatedAt;
+    session.time_ago = fmtTimeAgo(nextUpdatedAt) || session.time_ago || '—';
+    session.msg_count = messages.reduce((acc, m) => acc + (m.role !== 'event' ? 1 : 0), 0);
+
+    // Keep ordering consistent when activity advances via SSE/fallback.
+    State.sessions.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    return session;
+  },
+
   async init() {
     Theme.init();
     Scroll.init();
@@ -1842,10 +1878,31 @@ const App = {
     this.startCountdown();
   },
 
+  _tickRelativeTimes() {
+    const sessionById = new Map(State.sessions.map(s => [s.session_id, s]));
+
+    document.querySelectorAll('.session-card[data-id]').forEach(card => {
+      const session = sessionById.get(card.dataset.id);
+      if (!session) return;
+      const timeEl = card.querySelector('.card-time');
+      if (!timeEl) return;
+      timeEl.textContent = fmtTimeAgo(session.updated_at) || session.time_ago || '—';
+    });
+
+    if (State.selectedId) {
+      const selected = sessionById.get(State.selectedId);
+      const detailTimeEl = document.getElementById('detail-last-activity');
+      if (selected && detailTimeEl) {
+        detailTimeEl.textContent = fmtTimeAgo(selected.updated_at) || selected.time_ago || '—';
+      }
+    }
+  },
+
   startCountdown() {
     if (State.timer) clearInterval(State.timer);
     State.countdown = 10;
     State.timer = setInterval(() => {
+      this._tickRelativeTimes();
       State.countdown--;
       if (State.countdown <= 0) {
         this.refresh();
@@ -2113,6 +2170,15 @@ const App = {
       State.authError = null;
       const msgs = data.messages || [];
       const newCount = msgs.length;
+
+      const syncedSession = this._syncSessionSummaryFromMessages(s.session_id, msgs);
+      if (syncedSession) {
+        renderSessionList();
+        if (State.selectedId === syncedSession.session_id) {
+          renderDetailHeader(syncedSession);
+          renderDetailStats(syncedSession);
+        }
+      }
 
       const prevSignatures = isSameSession ? (State.detailEntrySignatures || {}) : {};
       const { nextSignatures, transitions: allTransitions } = buildEntryTransitions(msgs, prevSignatures);
