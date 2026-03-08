@@ -198,6 +198,76 @@ class TestLoopbackWithoutToken(ServerProcessMixin, unittest.TestCase):
         data = json.loads(body)
         self.assertEqual(data["status"], "ok")
 
+    def test_cron_session_uses_configured_job_name(self):
+        root = Path(self.tempdir.name)
+        sessions_file = root / "agents" / "main" / "sessions" / "sessions.json"
+        sessions = json.loads(sessions_file.read_text(encoding="utf-8"))
+
+        cron_id = "a037878e-74ff-47ca-b8b0-ef7162577a5c"
+        cron_key = f"agent:main:cron:{cron_id}"
+        sessions[cron_key] = {
+            "sessionId": "sess-cron-1",
+            "updatedAt": int(time.time() * 1000),
+            "lastChannel": "cron",
+            "model": "openai/gpt-5.3-codex",
+            "contextPct": 0,
+            "origin": {},
+        }
+        sessions_file.write_text(json.dumps(sessions), encoding="utf-8")
+
+        cron_entries = [
+            {
+                "id": "cron-entry-1",
+                "timestamp": "2026-03-07T12:10:00Z",
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Start cron"}],
+                    "usage": {"input": 0, "output": 0, "cost": {"total": 0}},
+                },
+            },
+            {
+                "id": "cron-entry-2",
+                "timestamp": "2026-03-07T12:10:05Z",
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Cron done"}],
+                    "model": "openai/gpt-5.3-codex",
+                    "stopReason": "stop",
+                    "usage": {"input": 2, "output": 4, "cost": {"total": 0}},
+                },
+            },
+        ]
+        cron_jsonl = root / "agents" / "main" / "sessions" / "sess-cron-1.jsonl"
+        with cron_jsonl.open("w", encoding="utf-8") as handle:
+            for entry in cron_entries:
+                handle.write(json.dumps(entry) + "\n")
+
+        cron_dir = root / "cron"
+        cron_dir.mkdir(parents=True, exist_ok=True)
+        cron_jobs = {
+            "version": 1,
+            "jobs": [
+                {
+                    "id": cron_id,
+                    "name": "Morgencheck E-Mails 06:30",
+                    "sessionKey": "agent:main:telegram:direct:6824095908",
+                }
+            ],
+        }
+        (cron_dir / "jobs.json").write_text(json.dumps(cron_jobs), encoding="utf-8")
+
+        status, _headers, body = self.request("/api/sessions")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+
+        cron_session = next((s for s in data["sessions"] if s["key"] == cron_key), None)
+        self.assertIsNotNone(cron_session)
+        self.assertEqual(cron_session["label"], "Morgencheck E-Mails 06:30")
+        self.assertEqual(cron_session["label_sub"], cron_id)
+        self.assertEqual(cron_session["session_key"], "agent:main:telegram:direct:6824095908")
+
 
 class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
     TOKEN = "test-sessionwatcher-token"
@@ -220,7 +290,7 @@ class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
     def test_root_requires_token_before_cookie_bootstrap(self):
         status, headers, body = self.request("/")
         self.assertEqual(status, 401)
-        self.assertIn("SessionWatcher access required", body)
+        self.assertIn("OpenClaw Session Watcher access required", body)
         self.assertNotIn("Set-Cookie", headers)
 
     def test_api_requires_cookie_when_token_enabled(self):
@@ -242,7 +312,7 @@ class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
     def test_invalid_bootstrap_token_is_rejected(self):
         status, _headers, body = self.request("/?access_token=wrong-token")
         self.assertEqual(status, 401)
-        self.assertIn("Invalid SessionWatcher access token", body)
+        self.assertIn("Invalid OpenClaw Session Watcher access token", body)
 
     def test_bootstrap_sets_cookie_and_allows_followup_requests(self):
         status, headers, _body = self.request(f"/?access_token={self.TOKEN}")
@@ -349,7 +419,7 @@ class TestPublicBindPolicy(unittest.TestCase):
             )
             output, _ = proc.communicate(timeout=5)
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("Refusing to bind SessionWatcher to public host", output)
+            self.assertIn("Refusing to bind OpenClaw Session Watcher to public host", output)
         finally:
             tempdir.cleanup()
 

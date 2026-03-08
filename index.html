@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SessionWatcher · OpenClaw</title>
+<title>OpenClaw Session Watcher</title>
+<link rel="icon" type="image/x-icon" href="/app.ico?v=20260308">
+<link rel="shortcut icon" type="image/x-icon" href="/app.ico?v=20260308">
 <style>
   /* ── Reset & Base ─────────────────────────────────────── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -111,9 +113,20 @@
     cursor: pointer;
     font-size: 11px;
     font-family: inherit;
-    transition: border-color .15s, color .15s;
+    transition: border-color .15s, color .15s, background .15s;
   }
   #refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Universal button press animation */
+  .btn-pressed {
+    animation: button-press 0.3s ease-out;
+  }
+
+  @keyframes button-press {
+    0% { transform: scale(1); }
+    40% { transform: scale(0.92); opacity: 0.8; }
+    100% { transform: scale(1); opacity: 1; }
+  }
 
   #theme-btn {
     background: transparent;
@@ -237,9 +250,16 @@
 
   .card-row1 {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     margin-bottom: 4px;
+  }
+
+  .card-label-wrap {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
   }
 
   .type-badge {
@@ -266,6 +286,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     flex: 1;
+  }
+
+  .card-sub-label {
+    font-size: 10px;
+    line-height: 1.2;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .active-dot {
@@ -933,7 +962,7 @@
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 28px 32px;
-    max-width: 420px;
+    max-width: 620px;
     width: 90%;
     box-shadow: 0 12px 40px rgba(0,0,0,.5);
     position: relative;
@@ -941,7 +970,33 @@
   body.light #burger-menu { box-shadow: 0 6px 20px rgba(15,23,42,.12); }
   body.light #about-modal { background: rgba(15,23,42,.32); }
   body.light #about-box { box-shadow: 0 12px 40px rgba(15,23,42,.14); }
+  #about-box .about-layout {
+    display: flex;
+    align-items: stretch;
+    gap: 16px;
+  }
+  #about-box .about-left {
+    flex: 0 0 190px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #about-box .about-separator {
+    width: 1px;
+    background: var(--border);
+    align-self: stretch;
+  }
+  #about-box .about-right {
+    flex: 1;
+    min-width: 0;
+  }
   #about-box h2 { font-size: 16px; font-weight: 700; color: var(--accent); margin: 0 0 6px; }
+  #about-box .about-logo {
+    display: block;
+    width: min(170px, 100%);
+    height: auto;
+    margin: 0;
+  }
   #about-box .about-sub { font-size: 11px; color: var(--muted); margin: 0 0 18px; }
   #about-box p { font-size: 12px; color: var(--fg); line-height: 1.7; margin: 0 0 10px; }
   #about-box a { color: var(--accent); text-decoration: none; }
@@ -953,6 +1008,19 @@
   }
   #about-close:hover { color: var(--fg); }
   .about-divider { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+  @media (max-width: 640px) {
+    #about-box { padding: 22px 20px; }
+    #about-box .about-layout {
+      flex-direction: column;
+      gap: 12px;
+    }
+    #about-box .about-left { flex: none; }
+    #about-box .about-separator {
+      width: 100%;
+      height: 1px;
+    }
+    #about-box .about-logo { width: min(150px, 100%); }
+  }
 
   /* ── Scrollbar global ── */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -964,9 +1032,9 @@
 
 <!-- ── Header ──────────────────────────────────────────── -->
 <div id="header">
-  <h1><span class="brand-main">SessionWatcher</span><span class="status-dot" id="status-dot" aria-hidden="true"></span><span class="brand-sub">OpenClaw</span></h1>
+  <h1><span class="brand-main">OpenClaw Session Watcher</span><span class="status-dot" id="status-dot" aria-hidden="true"></span></h1>
   <div id="hdr-right" style="display:flex;align-items:center;gap:8px;margin-left:auto">
-    <button id="refresh-btn" onclick="App.refresh()">↻ Refresh</button>
+    <button id="refresh-btn" onclick="App.manualRefresh()">↻ Refresh</button>
     <button id="theme-btn" onclick="Theme.toggle()" title="Light/Dark umschalten" aria-label="Light/Dark umschalten"></button>
     <div id="burger-wrap">
       <button id="burger-btn" onclick="Menu.toggle()" title="Menu">☰</button>
@@ -983,21 +1051,29 @@
 <div id="about-modal" onclick="if(event.target===this)Menu.closeAbout()">
   <div id="about-box">
     <button id="about-close" onclick="Menu.closeAbout()">✕</button>
-    <h2>SessionWatcher</h2>
-    <p>A lightweight local agent session monitor that lets you watch OpenClaw sessions in real time — with chat bubbles, thinking blocks, tool calls, and live auto-refresh.</p>
-    <hr class="about-divider">
-    <p>
-      <strong>Repository</strong><br>
-      <a href="https://github.com/EvanDataForge/openclaw-sessionwatcher" target="_blank">github.com/EvanDataForge/openclaw-sessionwatcher</a>
-    </p>
-    <p>
-      <strong>Author</strong><br>
-      Evan · <a href="https://x.com/EvanDataForge" target="_blank">@EvanDataForge</a> on X/Twitter
-    </p>
-    <p>
-      <strong>License</strong><br>
-      MIT
-    </p>
+    <div class="about-layout">
+      <div class="about-left">
+        <img class="about-logo" src="doc/OpenClawSessionWatcherLogoBasicSmall.png" alt="OpenClaw Session Watcher logo">
+      </div>
+      <div class="about-separator" aria-hidden="true"></div>
+      <div class="about-right">
+        <h2>OpenClaw Session Watcher</h2>
+        <p>OpenClaw Session Watcher is a lightweight local agent session monitor that lets you watch OpenClaw sessions in real time — with chat bubbles, thinking blocks, tool calls, and live auto-refresh.</p>
+        <hr class="about-divider">
+        <p>
+          <strong>Repository</strong><br>
+          <a href="https://github.com/EvanDataForge/openclaw-sessionwatcher" target="_blank">github.com/EvanDataForge/openclaw-sessionwatcher</a>
+        </p>
+        <p>
+          <strong>Author</strong><br>
+          Evan · <a href="https://x.com/EvanDataForge" target="_blank">@EvanDataForge</a> on X/Twitter
+        </p>
+        <p>
+          <strong>License</strong><br>
+          MIT
+        </p>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1058,6 +1134,15 @@
 
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
+// Button animation utility
+// ─────────────────────────────────────────────────────────────────────────────
+function animateButton(el) {
+  if (!el) return;
+  el.classList.add('btn-pressed');
+  setTimeout(() => el.classList.remove('btn-pressed'), 300);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────────
 const State = {
@@ -1100,7 +1185,13 @@ class ApiError extends Error {
 
 const API = {
   async request(path) {
-    const r = await fetch(path, { credentials: 'same-origin' });
+    // Add timestamp to prevent browser caching
+    const sep = path.includes('?') ? '&' : '?';
+    const url = `${path}${sep}_t=${Date.now()}`;
+    const r = await fetch(url, { 
+      credentials: 'same-origin',
+      cache: 'no-store'
+    });
     if (r.ok) return r.json();
 
     let payload = null;
@@ -1118,7 +1209,8 @@ const API = {
     return this.request(`/api/sessions/${sessionId}/messages`);
   },
   eventsUrl(sessionId) {
-    return `/api/sessions/${sessionId}/events`;
+    // Add timestamp to prevent browser caching of SSE endpoint
+    return `/api/sessions/${sessionId}/events?_t=${Date.now()}`;
   },
 };
 
@@ -1138,6 +1230,7 @@ const Theme = {
   },
 
   toggle() {
+      animateButton(document.getElementById('theme-btn'));
     const next = document.body.classList.contains('light') ? 'dark' : 'light';
     this.apply(next);
     localStorage.setItem(this.storageKey, next);
@@ -1160,6 +1253,7 @@ const Theme = {
 // ─────────────────────────────────────────────────────────────────────────────
 const Menu = {
   toggle() {
+    animateButton(document.getElementById('burger-btn'));
     document.getElementById('burger-menu').classList.toggle('open');
   },
   close() {
@@ -1386,11 +1480,15 @@ function renderSessionList() {
     const typeClass = `type-${s.type}`;
     const model = s.model && s.model !== '—' ? s.model : '';
     const modelShort = model.length > 22 ? model.slice(0,22)+'…' : model;
+    const hasSubLabel = Boolean((s.label_sub || '').trim());
+    const labelHtml = hasSubLabel
+      ? `<span class="card-label-wrap"><span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span><span class="card-sub-label" title="${esc(s.label_sub)}">${esc(s.label_sub)}</span></span>`
+      : `<span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span>`;
 
     return `<div class="session-card${selected}${unread}" data-id="${esc(s.session_id)}" onclick="App.selectSession('${esc(s.session_id)}')">
       <div class="card-row1">
         <span class="type-badge ${typeClass}">${esc(s.type_label)}</span>
-        <span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span>
+        ${labelHtml}
         ${statusDot}${unreadDot}
       </div>
       <div class="card-row2">
@@ -1411,7 +1509,15 @@ function renderDetailHeader(s) {
     `<span class="type-badge ${typeClass}">${esc(s.type_label)}</span> &nbsp;${esc(s.label)}`;
 
   const metaEl = document.getElementById('detail-meta');
-  if (metaEl) metaEl.textContent = `${s.agent} · ${s.last_channel || 'unknown channel'}`;
+  if (metaEl) {
+    let meta = s.agent;
+    if (s.type === 'cron') {
+      meta += ` · ${s.session_key || 'no session key'}`;
+    } else {
+      meta += ` · ${s.last_channel || 'unknown channel'}`;
+    }
+    metaEl.textContent = meta;
+  }
 }
 
 function renderDetailStats(s) {
@@ -1618,7 +1724,7 @@ function renderMessages(messages, transitions = {}) {
         <div class="msg-header">
           <span class="msg-role user">You</span>
           <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
-          ${m.id ? `<button class="copy-btn" onclick="openRawModal(${idx})" title="Raw JSON">{raw}</button>` : ''}
+          ${m.id ? `<button class="copy-btn" onclick="openRawModal(${idx}, this)" title="Raw JSON">{raw}</button>` : ''}
         </div>
         <div class="msg-body">${escText(text)}</div>
       </div>`;
@@ -1689,7 +1795,7 @@ function renderMessages(messages, transitions = {}) {
     const headerHtml = `<div class="msg-header">
       <span class="msg-role ${isToolResult ? 'assistant' : roleClass}" style="${isToolResult ? 'color:var(--green)' : ''}">${esc(roleLabel)}</span>
       ${modelInfo}${errBadge}${stopBadgeHtml}
-      ${m.id ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="Copy ID">⧉</button><button class="copy-btn" onclick="openRawModal(${idx})" title="View raw JSON">{raw}</button></span>` : ''}
+      ${m.id ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="Copy ID">⧉</button><button class="copy-btn" onclick="openRawModal(${idx}, this)" title="View raw JSON">{raw}</button></span>` : ''}
       <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
     </div>`;
     const footerHtml = tokInfo ? `<div class="msg-footer">${tokInfo}</div>` : '';
@@ -1808,7 +1914,13 @@ const App = {
     }
   },
 
+  manualRefresh() {
+    animateButton(document.getElementById('refresh-btn'));
+    this.refresh();
+  },
+
   setFilter(type, btn) {
+      animateButton(btn);
     State.filter = type;
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
@@ -1822,6 +1934,7 @@ const App = {
     btn.textContent = State.chatOnly ? '💬 Chat only' : '🔍 All messages';
   },
   toggleChatOnly() {
+      animateButton(document.getElementById('chat-toggle'));
     State.chatOnly = !State.chatOnly;
     const el = document.getElementById('messages');
     el.classList.toggle('chat-only', State.chatOnly);
@@ -1829,6 +1942,8 @@ const App = {
   },
 
   async selectSession(sessionId) {
+    const selectedCard = document.querySelector(`.session-card[data-id="${sessionId}"]`);
+    if (selectedCard) animateButton(selectedCard);
     State.detailLoadToken++;
     this._closeDetailStream();
     this._stopDetailFallback();
@@ -2054,6 +2169,7 @@ const App = {
 };
 
 function copyMsgId(fullId, btn) {
+    animateButton(btn);
   navigator.clipboard.writeText(fullId).then(() => {
     const prev = btn.textContent;
     btn.textContent = '✓';
@@ -2061,7 +2177,8 @@ function copyMsgId(fullId, btn) {
   }).catch(() => {});
 }
 
-function openRawModal(idx) {
+function openRawModal(idx, btn) {
+  if (btn) animateButton(btn);
   const content = RawStore[idx] ?? '';
   document.getElementById('raw-modal-body').innerHTML = syntaxHighlight(content);
   document.getElementById('raw-modal-title').textContent = 'Raw JSON — #' + idx;

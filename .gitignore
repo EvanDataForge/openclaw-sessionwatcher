@@ -7,3 +7,6 @@ __pycache__/
 .sessionwatcher.env
 
 server.pid
+
+# macOS Finder metadata
+.DS_Store

@@ -1,24 +1,29 @@
-# openclaw-sessionwatcher
+# OpenClaw Session Watcher
+
+<img align="right" src="doc/OpenClawSessionWatcherLogoBasicSmall.png" alt="OpenClaw Session Watcher Logo" />
 
 A lightweight local agent session monitor for watching live OpenClaw sessions in real time.
+
+<br clear="right" />
 
 ![Dashboard](https://img.shields.io/badge/Python-3.9%2B-blue) ![No dependencies](https://img.shields.io/badge/dependencies-none-green)
 
 ---
 
-## What it does
+### What it does
 
-SessionWatcher reads the JSONL session logs written by OpenClaw agents and presents them as a live, auto-refreshing web UI. It gives you a bird's-eye view of all active and recent sessions, and lets you drill into individual conversations to inspect messages, tool calls, thinking blocks, and more — without having to tail log files manually.
 
-<img width="1358" height="678" alt="image" src="https://github.com/user-attachments/assets/dc373026-1733-4622-94f7-2a795b1f2806" />  
+OpenClaw Session Watcher reads the JSONL session logs written by OpenClaw agents and presents them as a live, auto-refreshing web UI. It gives you a bird's-eye view of all active and recent sessions, and lets you drill into individual conversations to inspect messages, tool calls, thinking blocks, and more — without having to tail log files manually.
+
+![Dark mode screenshot](doc/SessionWatcherDarkMode.png)  
 Dark mode is the default. An optional light mode is available for brighter environments:  
-<img width="1357" height="679" alt="image" src="https://github.com/user-attachments/assets/1076800a-dc78-48fe-b870-f089cd3cf4dd" />  
+![Light mode screenshot](doc/SessionWatcherLightMode.png)  
 
 **Features:**
 
 - Built-in light mode and dark mode for the full UI
 - Session list with status indicators (active / stopped / stale)
-- Top bar branding: `SessionWatcher` + live green status dot + `OpenClaw`
+- Top bar branding: `OpenClaw Session Watcher` + live green status dot
 - Subtle footer meta line with session count and last refresh time
 - Per-session message stream with structured rendering:
   - WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
@@ -87,7 +92,7 @@ kill $(cat server.pid)
 
 ### macOS launchctl control
 
-If SessionWatcher is installed as a LaunchAgent, you can control it with:
+If OpenClaw Session Watcher is installed as a LaunchAgent, you can control it with:
 
 ```bash
 ./launchctl.sh start
@@ -134,7 +139,7 @@ http://<your-lan-ip>:9000/?access_token=<your-token>
 
 That bootstrap URL stores an `HttpOnly` cookie and immediately removes the token from the address bar.
 
-> SessionWatcher will refuse to bind to `0.0.0.0`, `::`, or any other non-loopback address unless `SESSIONWATCHER_ACCESS_TOKEN` is set.
+> OpenClaw Session Watcher will refuse to bind to `0.0.0.0`, `::`, or any other non-loopback address unless `SESSIONWATCHER_ACCESS_TOKEN` is set.
 
 ### Persistent local configuration
 
@@ -144,7 +149,7 @@ That bootstrap URL stores an `HttpOnly` cookie and immediately removes the token
 - `.env.local`
 - `.env`
 
-This is useful if you want SessionWatcher to always start in LAN mode without passing flags manually.
+This is useful if you want OpenClaw Session Watcher to always start in LAN mode without passing flags manually.
 
 Example:
 
@@ -160,7 +165,7 @@ These files are intended for local machine config and should not be committed.
 
 ### LaunchAgent / auto-start on macOS
 
-SessionWatcher can run as a macOS `LaunchAgent` so it starts automatically when your user logs in.
+OpenClaw Session Watcher can run as a macOS `LaunchAgent` so it starts automatically when your user logs in.
 
 Typical properties of the LaunchAgent setup:
 
@@ -254,12 +259,12 @@ Assistant messages are further decomposed into typed blocks:
 
 ## Security
 
-- Default bind is `127.0.0.1`, so SessionWatcher stays local unless you opt into LAN exposure.
+- Default bind is `127.0.0.1`, so OpenClaw Session Watcher stays local unless you opt into LAN exposure.
 - If you bind to a non-loopback address, `SESSIONWATCHER_ACCESS_TOKEN` is mandatory.
 - Authentication uses a one-time `/?access_token=...` bootstrap and an `HttpOnly` cookie afterwards.
 - All UI and API routes are protected when an access token is configured, including `/api/status`.
 - LAN requests are served by a threaded HTTP server, so slow session scans on one request should not block unrelated connections.
-- SessionWatcher is still plain HTTP. For untrusted networks or TLS, put it behind a reverse proxy or tunnel.
+- OpenClaw Session Watcher is still plain HTTP. For untrusted networks or TLS, put it behind a reverse proxy or tunnel.
 - Wildcard CORS is intentionally disabled.
 
 ---

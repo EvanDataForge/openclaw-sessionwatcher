@@ -25,15 +25,15 @@ start_agent() {
   else
     launchctl bootstrap "$DOMAIN" "$PLIST"
   fi
-  echo "SessionWatcher started via launchctl."
+  echo "OpenClaw Session Watcher started via launchctl."
 }
 
 stop_agent() {
   if is_loaded; then
     launchctl bootout "$TARGET"
-    echo "SessionWatcher stopped."
+    echo "OpenClaw Session Watcher stopped."
   else
-    echo "SessionWatcher is not loaded."
+    echo "OpenClaw Session Watcher is not loaded."
   fi
 }
 
@@ -44,14 +44,14 @@ restart_agent() {
   else
     launchctl bootstrap "$DOMAIN" "$PLIST"
   fi
-  echo "SessionWatcher restarted."
+  echo "OpenClaw Session Watcher restarted."
 }
 
 status_agent() {
   if is_loaded; then
     launchctl print "$TARGET" | sed -n '1,40p'
   else
-    echo "SessionWatcher is not loaded."
+    echo "OpenClaw Session Watcher is not loaded."
   fi
 }
 

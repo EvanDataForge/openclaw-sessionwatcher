@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sessionwatcher — Live session activity dashboard for OpenClaw
+OpenClaw Session Watcher — Live session activity dashboard for OpenClaw
 Runs on http://127.0.0.1:8090
 """
 
@@ -11,6 +11,7 @@ import ipaddress
 import time
 import socket
 import argparse
+import mimetypes
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime, timezone
@@ -144,7 +145,7 @@ def assert_public_bind_allowed(bind: str, access_token: str):
     if str(access_token or "").strip():
         return
     raise SystemExit(
-        f'Refusing to bind SessionWatcher to public host "{bind}" without '
+        f'Refusing to bind OpenClaw Session Watcher to public host "{bind}" without '
         "SESSIONWATCHER_ACCESS_TOKEN. Set SESSIONWATCHER_ACCESS_TOKEN or bind to 127.0.0.1/::1/localhost."
     )
 
@@ -173,6 +174,101 @@ def load_sessions_store(agent_dir: Path) -> dict:
             return json.load(f)
     except Exception:
         return {}
+
+def _iter_job_dicts(payload) -> list[dict]:
+    """Extract job-like dicts from common config layouts."""
+    items: list[dict] = []
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                items.append(item)
+        return items
+
+    if isinstance(payload, dict):
+        # shape: {"jobs": [...]}
+        jobs = payload.get("jobs")
+        if isinstance(jobs, list):
+            for item in jobs:
+                if isinstance(item, dict):
+                    items.append(item)
+            return items
+
+        # shape: {"jobs": {"<id>": {...}}}
+        if isinstance(jobs, dict):
+            for key, val in jobs.items():
+                if isinstance(val, dict):
+                    item = dict(val)
+                    item.setdefault("id", str(key))
+                    items.append(item)
+            return items
+
+        # shape: {"<id>": {...}}
+        for key, val in payload.items():
+            if isinstance(val, dict):
+                item = dict(val)
+                item.setdefault("id", str(key))
+                items.append(item)
+        return items
+
+    return items
+
+def load_cron_name_map() -> dict[str, str]:
+    """Build mapping cron_id -> cron name from OpenClaw cron config files."""
+    mapping: dict[str, str] = {}
+
+    jobs_path = OPENCLAW_DIR / "cron" / "jobs.json"
+    try:
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
+        for job in _iter_job_dicts(data):
+            jid = str(job.get("id", "")).strip()
+            jname = str(job.get("name", "")).strip()
+            if jid and jname:
+                mapping[jid] = jname
+    except Exception:
+        pass
+
+    openclaw_path = OPENCLAW_DIR / "openclaw.json"
+    try:
+        data = json.loads(openclaw_path.read_text(encoding="utf-8"))
+        cron_cfg = data.get("cron") if isinstance(data, dict) else None
+        for job in _iter_job_dicts(cron_cfg):
+            jid = str(job.get("id", "")).strip()
+            jname = str(job.get("name", "")).strip()
+            if jid and jname and jid not in mapping:
+                mapping[jid] = jname
+    except Exception:
+        pass
+
+    return mapping
+
+def load_cron_sessionkey_map() -> dict[str, str]:
+    """Build mapping cron_id -> sessionKey from OpenClaw cron config files."""
+    mapping: dict[str, str] = {}
+
+    jobs_path = OPENCLAW_DIR / "cron" / "jobs.json"
+    try:
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
+        for job in _iter_job_dicts(data):
+            jid = str(job.get("id", "")).strip()
+            jkey = str(job.get("sessionKey", "")).strip()
+            if jid and jkey:
+                mapping[jid] = jkey
+    except Exception:
+        pass
+
+    openclaw_path = OPENCLAW_DIR / "openclaw.json"
+    try:
+        data = json.loads(openclaw_path.read_text(encoding="utf-8"))
+        cron_cfg = data.get("cron") if isinstance(data, dict) else None
+        for job in _iter_job_dicts(cron_cfg):
+            jid = str(job.get("id", "")).strip()
+            jkey = str(job.get("sessionKey", "")).strip()
+            if jid and jkey and jid not in mapping:
+                mapping[jid] = jkey
+    except Exception:
+        pass
+
+    return mapping
 
 def tail_jsonl(path: Path, n: int = 200) -> list[dict]:
     """Read last n lines from a JSONL file (handles large files efficiently)."""
@@ -397,6 +493,8 @@ def load_all_sessions() -> list[dict]:
     """Scan all agents and return enriched session objects."""
     cutoff = now_ms() - ACTIVE_WINDOW_H * 3600 * 1000
     sessions = []
+    cron_name_map = load_cron_name_map()
+    cron_sessionkey_map = load_cron_sessionkey_map()
 
     for agent_dir in sorted(AGENTS_DIR.iterdir()):
         if not agent_dir.is_dir():
@@ -412,9 +510,16 @@ def load_all_sessions() -> list[dict]:
             if updated_at < cutoff:
                 continue  # too old
 
-            session_id = val.get("sessionId", "")
-            jsonl_path = sess_dir / f"{session_id}.jsonl" if session_id else None
-            has_file   = bool(jsonl_path and jsonl_path.exists())
+            # Resolve JSONL file path: prefer explicit sessionFile, fallback to sessionId
+            session_file_declared = val.get("sessionFile", "")
+            if session_file_declared:
+                jsonl_path = Path(session_file_declared)
+                session_id = jsonl_path.stem  # extract session_id from filename
+            else:
+                session_id = val.get("sessionId", "")
+                jsonl_path = sess_dir / f"{session_id}.jsonl" if session_id else None
+
+            has_file = bool(jsonl_path and jsonl_path.exists())
 
             # Count messages & get stats
             msg_count   = 0
@@ -462,11 +567,25 @@ def load_all_sessions() -> list[dict]:
             origin_label = origin.get("label", "").strip()
             parts = key.split(":")
 
+            cron_id = ""
+            if stype == "cron":
+                if key.startswith("cron:") and len(parts) > 1:
+                    cron_id = parts[1].strip()
+                else:
+                    try:
+                        cron_idx = parts.index("cron")
+                        if cron_idx + 1 < len(parts):
+                            cron_id = parts[cron_idx + 1].strip()
+                    except ValueError:
+                        cron_id = ""
+
             if stype == "group":
                 # origin.label contains the group subject e.g. "Clawdine Twittering"
                 label = origin_label or val.get("deliveryContext", {}).get("groupSubject", "") or key
             elif stype == "telegram":
                 label = origin_label or f"DM {parts[-1]}" if parts else key
+            elif stype == "cron":
+                label = cron_name_map.get(cron_id, "") or origin_label or key
             elif stype == "main":
                 if val.get("lastChannel") == "webchat" or (val.get("origin") or {}).get("provider") == "webchat":
                     label = "Direct / Webchat"
@@ -482,10 +601,13 @@ def load_all_sessions() -> list[dict]:
                 "type":       stype,
                 "type_label": type_label(stype),
                 "label":      label[:60],
+                "label_sub":  cron_id if cron_id else "",
+                "cron_id":    cron_id,
                 "updated_at": effective_updated_at,
                 "updated_fmt":fmt_ts(effective_updated_at),
                 "time_ago":   time_ago(effective_updated_at),
                 "last_channel":  val.get("lastChannel", ""),
+                "session_key": cron_sessionkey_map.get(cron_id, key) if cron_id else key,
                 "model":      last_model or friendly_model(val.get("model", "")),
                 "context_pct":val.get("contextPct", 0),
                 "msg_count":  msg_count,
@@ -570,7 +692,7 @@ class Handler(BaseHTTPRequestHandler):
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>SessionWatcher Access Required</title>
+    <title>OpenClaw Session Watcher Access Required</title>
   <style>
     body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0b0f17; color: #e8edf7; display: grid; place-items: center; min-height: 100vh; }}
     .card {{ width: min(560px, calc(100vw - 32px)); background: #121826; border: 1px solid #27324a; border-radius: 18px; padding: 24px; box-shadow: 0 18px 48px rgba(0,0,0,.35); }}
@@ -581,7 +703,7 @@ class Handler(BaseHTTPRequestHandler):
 </head>
 <body>
   <div class=\"card\">
-    <h1>🔐 SessionWatcher access required</h1>
+        <h1>🔐 OpenClaw Session Watcher access required</h1>
     <p>{message}</p>
     <p>Open this page once with <code>/?{ACCESS_QUERY_PARAM}=YOUR_TOKEN</code> to store the access cookie.</p>
   </div>
@@ -608,7 +730,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if provided is not None:
             if provided != self._access_token():
-                self._send_auth_error(api_request, "Invalid SessionWatcher access token.")
+                self._send_auth_error(api_request, "Invalid OpenClaw Session Watcher access token.")
                 return True
 
             filtered_query = [
@@ -635,7 +757,7 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_auth_error(
             api_request,
-            "SessionWatcher access token required. Open /?access_token=... once to continue.",
+            "OpenClaw Session Watcher access token required. Open /?access_token=... once to continue.",
         )
         return True
 
@@ -655,6 +777,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except FileNotFoundError:
+            self.send_error(404, "Not found")
+
+    def send_file(self, path: Path, content_type: str, cache_control: str = "public, max-age=86400"):
+        """Send a static file with appropriate headers."""
+        try:
+            body = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", cache_control)
             self.end_headers()
             self.wfile.write(body)
         except FileNotFoundError:
@@ -803,6 +938,26 @@ class Handler(BaseHTTPRequestHandler):
                 "generated_at":  now_ms(),
             })
 
+        elif path == "/app.ico" or path == "/favicon.ico":
+            self.send_file(
+                Path(__file__).parent / "app.ico",
+                "image/x-icon",
+                cache_control="no-store, no-cache, must-revalidate",
+            )
+
+        elif path.startswith("/doc/"):
+            # Serve screenshots/logo assets used by the UI and About dialog.
+            base_dir = (Path(__file__).parent / "doc").resolve()
+            requested = (Path(__file__).parent / path.lstrip("/")).resolve()
+            try:
+                requested.relative_to(base_dir)
+            except ValueError:
+                self.send_error(403, "Forbidden")
+                return
+
+            content_type, _ = mimetypes.guess_type(requested.name)
+            self.send_file(requested, content_type or "application/octet-stream")
+
         else:
             self.send_error(404, "Not found")
 
@@ -851,7 +1006,7 @@ class SessionwatcherHTTPServer(ThreadingHTTPServer):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Sessionwatcher server")
+    parser = argparse.ArgumentParser(description="OpenClaw Session Watcher server")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--bind", default=DEFAULT_BIND)
     parser.add_argument("--access-token", default=DEFAULT_ACCESS_TOKEN)
@@ -863,7 +1018,7 @@ def main():
     server = SessionwatcherHTTPServer((args.bind, args.port), Handler)
     server.access_token = access_token
     url = f"http://{args.bind}:{args.port}"
-    print(f"Sessionwatcher running → {url}")
+    print(f"OpenClaw Session Watcher running → {url}")
     print(f"OpenClaw dir: {OPENCLAW_DIR}")
     if access_token:
         print("Access protection: enabled")

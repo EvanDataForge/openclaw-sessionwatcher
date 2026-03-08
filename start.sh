@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the Sessionwatcher dashboard
+# Start the OpenClaw Session Watcher dashboard
 set -e
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +29,7 @@ if [ -n "$EXISTING" ]; then
   sleep 1
 fi
 
-echo "Starting Sessionwatcher on http://$BIND:$PORT"
+echo "Starting OpenClaw Session Watcher on http://$BIND:$PORT"
 if [ -n "$ACCESS_TOKEN" ]; then
   echo "Access protection: enabled"
 fi
