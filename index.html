@@ -750,6 +750,22 @@
     background: rgba(247,84,84,.05);
     border-color: rgba(247,84,84,.25);
   }
+  .block-toolresult.failed {
+    background: rgba(247,84,84,.05);
+    border-color: rgba(247,84,84,.25);
+  }
+  .block-toolresult.running {
+    background: rgba(245,166,35,.05);
+    border-color: rgba(245,166,35,.25);
+  }
+  .block-toolresult.accepted {
+    background: rgba(79,142,247,.05);
+    border-color: rgba(79,142,247,.25);
+  }
+  .block-toolresult.completed {
+    background: rgba(62,207,110,.05);
+    border-color: rgba(62,207,110,.25);
+  }
   .block-toolresult-header {
     font-size: 10px;
     font-weight: 700;
@@ -760,6 +776,23 @@
     gap: 6px;
   }
   .block-toolresult.error .block-toolresult-header { color: var(--red); }
+  .block-toolresult.failed .block-toolresult-header { color: var(--red); }
+  .block-toolresult.running .block-toolresult-header { color: var(--orange); }
+  .block-toolresult.accepted .block-toolresult-header { color: var(--accent); }
+  .block-toolresult.completed .block-toolresult-header { color: var(--green); }
+  .tool-status-badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 2px;
+    background: rgba(255,255,255,.1);
+  }
+  .block-toolresult.error .tool-status-badge { color: var(--red); }
+  .block-toolresult.failed .tool-status-badge { color: var(--red); }
+  .block-toolresult.running .tool-status-badge { color: var(--orange); }
+  .block-toolresult.accepted .tool-status-badge { color: var(--accent); }
+  .block-toolresult.completed .tool-status-badge { color: var(--green); }
+  .block-toolresult.ok .tool-status-badge { color: var(--green); }
   .block-toolresult-preview {
     font-size: 10px;
     color: var(--muted);
@@ -1378,6 +1411,52 @@ function renderAuthRequired(target, message, icon = '🔐') {
   target.innerHTML = `<div class="empty"><div class="empty-icon">${icon}</div><div class="empty-text">${esc(message)}</div></div>`;
 }
 
+// ── Tool Result Status Detection ──────────────────────────────────────────────
+function getToolResultStatus(details) {
+  // Returns { type: 'error'|'ok'|'failed'|'running'|'completed'|'neutral', label: 'ERROR'|'OK'|... }
+  if (!details || typeof details !== 'object') {
+    return { type: 'neutral', label: '' };
+  }
+
+  // Priority 1: explicit status="error"
+  if (details.status === 'error') {
+    return { type: 'error', label: 'ERROR' };
+  }
+
+  // Priority 2: explicit status="failed"
+  if (details.status === 'failed') {
+    return { type: 'failed', label: 'FAILED' };
+  }
+
+  // Priority 3: has error field (string)
+  if (details.error && typeof details.error === 'string' && details.error.trim()) {
+    return { type: 'error', label: 'ERROR' };
+  }
+
+  // Priority 4: ok: true
+  if (details.ok === true) {
+    return { type: 'ok', label: 'OK' };
+  }
+
+  // Priority 5: ok: false
+  if (details.ok === false) {
+    return { type: 'failed', label: 'FAILED' };
+  }
+
+  // Priority 6: status values for async operations
+  if (details.status === 'completed') {
+    return { type: 'completed', label: 'COMPLETED' };
+  }
+  if (details.status === 'running') {
+    return { type: 'running', label: 'RUNNING' };
+  }
+  if (details.status === 'accepted') {
+    return { type: 'accepted', label: 'ACCEPTED' };
+  }
+
+  return { type: 'neutral', label: '' };
+}
+
 function fmtTokens(n) {
   if (!n) return '0';
   if (n >= 1_000_000) return (n/1_000_000).toFixed(1)+'M';
@@ -1424,6 +1503,13 @@ function getMessageSignature(message) {
       })).join('|')
     : '';
 
+  // Simplified details signature to avoid stringify issues with large objects
+  const detailsSig = message?.details ? JSON.stringify({
+    status: message.details.status,
+    ok: message.details.ok,
+    has_error: !!message.details.error
+  }) : '';
+
   return JSON.stringify({
     role: message?.role,
     text: message?.text,
@@ -1433,6 +1519,7 @@ function getMessageSignature(message) {
     model: message?.model,
     tool_name: message?.tool_name,
     is_error: message?.is_error,
+    details_sig: detailsSig,  // Use simplified signature
     total_chars: message?.total_chars,
     blocksSig,
   });
@@ -1757,12 +1844,20 @@ function renderMessages(messages, transitions = {}) {
     if (isToolResult) roleLabel = `result:${m.tool_name}`;
     const modelInfo = !isToolResult && m.model && m.model !== '—'
       ? `<span class="msg-model">${esc(m.model)}</span>` : '';
-    const errBadge = isToolResult && m.is_error
-      ? `<span style="color:var(--red);font-size:10px">ERROR</span>` : '';
+    
+    // Determine status from details field
+    const toolStatus = isToolResult ? getToolResultStatus(m.details) : { type: 'neutral', label: '' };
+    const statusBadge = toolStatus.label
+      ? `<span class="tool-status-badge">${toolStatus.label}</span>`
+      : '';
 
     let bodyHtml = '';
     if (isToolResult) {
-      const errClass = m.is_error ? ' error' : '';
+      const statusClass = toolStatus.type !== 'neutral' ? ` ${toolStatus.type}` : (m.is_error ? ' error' : '');
+      const icon = toolStatus.type === 'error' || toolStatus.type === 'failed' ? '✗' : 
+                   toolStatus.type === 'ok' || toolStatus.type === 'completed' ? '✓' : 
+                   toolStatus.type === 'running' ? '⟳' :
+                   toolStatus.type === 'accepted' ? '◷' : '•';
       const alreadyExpanded = m.id && ExpandedFull[m.id] !== undefined;
       const displayText = alreadyExpanded ? ExpandedFull[m.id] : (m.text || '(empty)');
       const trimmed = !alreadyExpanded && m.total_chars > 300;
@@ -1770,8 +1865,8 @@ function renderMessages(messages, transitions = {}) {
       const trKey = `${idx}-tr`;
       const showAllBtn = trimmed
         ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" data-eid="${esc(m.id||'')}" onclick="fetchAndShowFull(this)">(show all)</button>` : '';
-      bodyHtml = `<div class="block-toolresult${errClass}" style="margin:0">
-        <div class="block-toolresult-header">${m.is_error?'✗':'✓'} ${esc(m.tool_name)}<span style="font-weight:400;color:var(--muted)">${chars}</span></div>
+      bodyHtml = `<div class="block-toolresult${statusClass}" style="margin:0">
+        <div class="block-toolresult-header">${icon} ${esc(m.tool_name)}${statusBadge ? ' ' + statusBadge : ''}<span style="font-weight:400;color:var(--muted)">${chars}</span></div>
         <div class="block-toolresult-preview" data-trkey="${esc(trKey)}">${escText(displayText)}</div>${showAllBtn}
       </div>`;
     } else if (m.blocks && m.blocks.length > 0) {
@@ -1812,7 +1907,7 @@ function renderMessages(messages, transitions = {}) {
 
     const headerHtml = `<div class="msg-header">
       <span class="msg-role ${isToolResult ? 'assistant' : roleClass}" style="${isToolResult ? 'color:var(--green)' : ''}">${esc(roleLabel)}</span>
-      ${modelInfo}${errBadge}${stopBadgeHtml}
+      ${modelInfo}${stopBadgeHtml}
       ${m.id ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="Copy ID">⧉</button><button class="copy-btn" onclick="openRawModal(${idx}, this)" title="View raw JSON">{raw}</button></span>` : ''}
       <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
     </div>`;
@@ -2225,6 +2320,7 @@ const App = {
       }
       return changed;
     } catch(e) {
+      console.error('[Detail] Error loading messages:', e);
       if (e?.authRequired) {
         State.authError = authMessage(e);
         renderAuthRequired(msgEl, State.authError);
@@ -2234,7 +2330,7 @@ const App = {
         return;
       }
       if (!isRefresh || !isSameSession) {
-        msgEl.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load messages</div></div>`;
+        msgEl.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">Failed to load messages<br><small style="color:#888;font-size:11px">${esc(e?.message || e)}</small></div></div>`;
       }
       return false;
     }

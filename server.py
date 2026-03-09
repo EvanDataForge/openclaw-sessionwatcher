@@ -394,12 +394,14 @@ def parse_messages(entries: list[dict]) -> list[dict]:
         if role == "toolResult":
             tool_name = msg.get("toolName", "?")
             is_error  = msg.get("isError", False)
+            details   = msg.get("details", {})  # Extract details field
             preview, full_text, total_chars = _tool_result_preview(msg.get("content", ""))
             msgs.append({
                 "id":           entry.get("id", ""),
                 "role":         "toolResult",
                 "tool_name":    tool_name,
                 "is_error":     is_error,
+                "details":      details,  # Pass details to frontend
                 "text":         preview,
                 "text_full":    full_text,
                 "total_chars":  total_chars,
@@ -409,7 +411,7 @@ def parse_messages(entries: list[dict]) -> list[dict]:
                 "stop_reason":  "",
                 # unused for toolResult but keep schema consistent
                 "model": "", "input_tok": 0, "output_tok": 0, "cost": 0.0,
-                "has_metadata": False, "text_full": "",
+                "has_metadata": False,
                 "blocks": [],
             })
             continue
