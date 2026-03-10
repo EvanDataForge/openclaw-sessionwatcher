@@ -12,6 +12,14 @@ import time
 import socket
 import argparse
 import mimetypes
+import threading
+import uuid
+import queue
+import hashlib
+try:
+    import websocket  # type: ignore
+except ImportError:
+    websocket = None
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from datetime import datetime, timezone
@@ -35,6 +43,15 @@ _META_PATTERN = re.compile(
     r'^(?:[^\n]*?\(untrusted metadata\):\n```(?:json)?\n.*?\n```\n\n)+',
     re.DOTALL
 )
+_META_BLOCK_PATTERN = re.compile(
+    r'[^\n]*?\(untrusted metadata\):\n```(?:json)?\n(.*?)\n```(?:\n\n|$)',
+    re.DOTALL,
+)
+_DIRECT_GATEWAY_IDS = {
+    "webchat-ui",
+    "gateway-client",
+    "openclaw-control-ui",
+}
 
 def strip_metadata(text: str) -> tuple[str, bool]:
     """Strip leading 'untrusted metadata' blocks injected by the gateway.
@@ -44,11 +61,116 @@ def strip_metadata(text: str) -> tuple[str, bool]:
         return text[m.end():].strip(), True
     return text, False
 
+def parse_untrusted_metadata_blocks(text: str) -> list[dict]:
+    """Extract JSON objects from leading '(untrusted metadata)' blocks."""
+    if not text:
+        return []
+
+    blocks: list[dict] = []
+    for m in _META_BLOCK_PATTERN.finditer(str(text)):
+        raw = str(m.group(1) or "").strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            blocks.append(obj)
+    return blocks
+
+def _looks_like_telegram_id(value) -> bool:
+    s = str(value or "").strip()
+    return bool(s) and s.isdigit() and len(s) >= 5
+
+def classify_user_source(meta_blocks: list[dict]) -> dict:
+    """Best-effort source classifier for user messages: direct vs telegram."""
+    if not meta_blocks:
+        return {
+            "source_channel": "unknown",
+            "source_label": "",
+            "source_id": "",
+        }
+
+    saw_telegram = False
+    saw_direct = False
+    source_label = ""
+    source_id = ""
+
+    for block in meta_blocks:
+        if not isinstance(block, dict):
+            continue
+
+        sid = str(block.get("id") or "").strip()
+        label = str(block.get("label") or "").strip()
+        provider = str(block.get("provider") or "").strip().lower()
+        keys = {str(k).strip().lower() for k in block.keys()}
+
+        if not source_id and sid:
+            source_id = sid
+        if not source_label and label:
+            source_label = label
+
+        # Telegram indicators from conversation/sender metadata.
+        if provider == "telegram":
+            saw_telegram = True
+        if {
+            "sender_id",
+            "message_id",
+            "conversation_label",
+            "group_subject",
+            "is_group_chat",
+        } & keys:
+            saw_telegram = True
+        if _looks_like_telegram_id(block.get("sender_id")) or _looks_like_telegram_id(sid):
+            saw_telegram = True
+
+        # Direct/webchat indicators from sender metadata.
+        sid_l = sid.lower()
+        label_l = label.lower()
+        if sid_l in _DIRECT_GATEWAY_IDS or label_l in _DIRECT_GATEWAY_IDS:
+            saw_direct = True
+        if (
+            "webchat" in sid_l
+            or "webchat" in label_l
+            or "gateway" in sid_l
+            or "gateway" in label_l
+            or "control-ui" in sid_l
+            or "control-ui" in label_l
+        ):
+            saw_direct = True
+
+    if saw_telegram and not saw_direct:
+        channel = "telegram"
+    elif saw_direct and not saw_telegram:
+        channel = "direct"
+    elif saw_telegram:
+        channel = "telegram"
+    elif saw_direct:
+        channel = "direct"
+    else:
+        channel = "unknown"
+
+    return {
+        "source_channel": channel,
+        "source_label": source_label,
+        "source_id": source_id,
+    }
+
 _MARKER_PATTERN = re.compile(r'\[\[[^\]]*\]\]')
+_GATEWAY_TIME_PREFIX_PATTERN = re.compile(
+    r'^\[[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+GMT[^\]]*\]\s*'
+)
 
 def strip_markers(text: str) -> str:
     """Remove [[...]] markers like [[reply_to_current]] from message text."""
     return _MARKER_PATTERN.sub('', text).strip()
+
+def strip_gateway_time_prefix(text: str) -> str:
+    """Strip leading '[Tue 2026-... GMT+X]' prefix injected by gateway envelopes."""
+    if not text:
+        return ""
+    return _GATEWAY_TIME_PREFIX_PATTERN.sub('', str(text), count=1).strip()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -89,10 +211,18 @@ def friendly_model(raw: str) -> str:
     return raw
 
 def session_type(key: str, val: dict | None = None) -> str:
+    # Key semantics are the most stable source. Keep channel identity anchored
+    # to the session key so transient lastChannel/origin updates do not relabel
+    # Telegram sessions as webchat/direct.
     if ":cron:" in key or key.startswith("cron:"):
         return "cron"
     if ":subagent:" in key or "subagent" in key:
         return "subagent"
+    if ":telegram:group:" in key or key.startswith("telegram:group:"):
+        return "group"
+    if ":telegram:" in key or key.startswith("telegram:"):
+        return "telegram"
+
     # Use rich metadata when available
     if val:
         chat_type   = val.get("chatType") or ""
@@ -106,10 +236,6 @@ def session_type(key: str, val: dict | None = None) -> str:
         if last_channel == "webchat" or origin.get("provider") == "webchat":
             return "main"
     # Fallback: key-based
-    if ":telegram:group:" in key or key.startswith("telegram:group:"):
-        return "group"
-    if "telegram" in key:
-        return "telegram"
     if key.startswith("agent:") or key == "agent:main:sessions":
         return "main"
     return "other"
@@ -270,6 +396,38 @@ def load_cron_sessionkey_map() -> dict[str, str]:
 
     return mapping
 
+def load_gateway_config() -> dict:
+    """Load OpenClaw gateway configuration from openclaw.json.
+    Returns dict with 'token', 'bind', 'port', 'available' keys.
+    """
+    openclaw_path = OPENCLAW_DIR / "openclaw.json"
+    if not openclaw_path.exists():
+        return {"available": False, "error": "openclaw.json not found"}
+    
+    try:
+        data = json.loads(openclaw_path.read_text(encoding="utf-8"))
+        gateway_cfg = data.get("gateway", {})
+        
+        token = gateway_cfg.get("auth", {}).get("token", "")
+        bind = gateway_cfg.get("bind", "loopback")
+        port = gateway_cfg.get("port", 18789)
+        
+        # Resolve "loopback" to actual address
+        if bind == "loopback":
+            bind = "127.0.0.1"
+        
+        if not token:
+            return {"available": False, "error": "No gateway token configured"}
+        
+        return {
+            "available": True,
+            "token": token,
+            "bind": bind,
+            "port": port
+        }
+    except Exception as e:
+        return {"available": False, "error": f"Failed to load config: {e}"}
+
 def tail_jsonl(path: Path, n: int = 200) -> list[dict]:
     """Read last n lines from a JSONL file (handles large files efficiently)."""
     if not path.exists():
@@ -329,6 +487,72 @@ def _tool_result_preview(content) -> tuple[str, str, int]:
         return full[:300], full, total
     s = str(content)
     return s[:300], s, len(s)
+
+def _parse_iso_ms(iso_ts: str) -> int:
+    """Parse ISO-8601 timestamp to epoch milliseconds (best effort)."""
+    if not iso_ts:
+        return 0
+    try:
+        return int(datetime.fromisoformat(iso_ts.replace("Z", "+00:00")).timestamp() * 1000)
+    except Exception:
+        return 0
+
+def _normalize_user_text(text: str) -> str:
+    """Normalize user text for short-window duplicate detection."""
+    if not text:
+        return ""
+    return " ".join(str(text).strip().split()).casefold()
+
+def _dedupe_retry_user_messages(msgs: list[dict]) -> list[dict]:
+    """Collapse duplicate user messages created by internal retry/fallback.
+
+    Some agent pipelines append the same user message again after an immediate
+    assistant error during model/provider fallback. Keep the first user message
+    and suppress the retry duplicate when it appears within a short window.
+    """
+    if not msgs:
+        return msgs
+
+    filtered: list[dict] = []
+    last_user_norm = ""
+    last_user_ts = 0
+    saw_error_since_last_user = False
+
+    for m in msgs:
+        role = m.get("role", "")
+
+        if role == "assistant":
+            stop_reason = str(m.get("stop_reason", "") or "").lower()
+            has_text = bool(str(m.get("text", "") or "").strip())
+            if stop_reason == "error" and not has_text:
+                saw_error_since_last_user = True
+        elif role == "event" and m.get("event_type") == "error":
+            saw_error_since_last_user = True
+
+        if role == "user":
+            norm = _normalize_user_text(m.get("text", ""))
+            ts_ms = _parse_iso_ms(m.get("ts_iso", ""))
+
+            is_retry_duplicate = (
+                bool(norm)
+                and saw_error_since_last_user
+                and norm == last_user_norm
+                and bool(last_user_ts)
+                and bool(ts_ms)
+                and 0 <= (ts_ms - last_user_ts) <= 5000
+            )
+
+            if is_retry_duplicate:
+                saw_error_since_last_user = False
+                continue
+
+            last_user_norm = norm
+            last_user_ts = ts_ms
+            saw_error_since_last_user = False
+
+        filtered.append(m)
+
+    return filtered
 
 def parse_messages(entries: list[dict]) -> list[dict]:
     """Extract display-friendly message records from raw JSONL entries."""
@@ -412,6 +636,9 @@ def parse_messages(entries: list[dict]) -> list[dict]:
                 # unused for toolResult but keep schema consistent
                 "model": "", "input_tok": 0, "output_tok": 0, "cost": 0.0,
                 "has_metadata": False,
+                "source_channel": "unknown",
+                "source_label": "",
+                "source_id": "",
                 "blocks": [],
             })
             continue
@@ -455,6 +682,11 @@ def parse_messages(entries: list[dict]) -> list[dict]:
                                 "is_error": block.get("isError", False)})
 
         text = " ".join(p for p in plain_parts if p).strip()
+        source_info = classify_user_source(parse_untrusted_metadata_blocks(text)) if role == "user" else {
+            "source_channel": "unknown",
+            "source_label": "",
+            "source_id": "",
+        }
         usage = msg.get("usage", {})
         cost_obj = usage.get("cost", {})
         cost = 0.0
@@ -465,6 +697,8 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             cost = max(0, float(cost_obj))
 
         clean_text, had_meta = strip_metadata(text) if role == "user" else (text, False)
+        if role == "user" and had_meta:
+            clean_text = strip_gateway_time_prefix(clean_text)
 
         # Adjust blocks text for user messages with metadata
         if had_meta and blocks and blocks[0]["kind"] == "text":
@@ -476,6 +710,9 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             "text":         clean_text,
             "text_full":    text,
             "has_metadata": had_meta,
+            "source_channel": source_info["source_channel"],
+            "source_label": source_info["source_label"],
+            "source_id": source_info["source_id"],
             "blocks":       blocks,
             "ts_iso":       entry.get("timestamp", ""),
             "ts_fmt":       fmt_iso(entry.get("timestamp", "")),
@@ -489,7 +726,7 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             "is_error":     False,
             "total_chars":  0,
         })
-    return msgs
+    return _dedupe_retry_user_messages(msgs)
 
 def load_all_sessions() -> list[dict]:
     """Scan all agents and return enriched session objects."""
@@ -660,6 +897,207 @@ def session_file_state(path: Path) -> dict | None:
         return None
     except Exception:
         return None
+
+# ── Gateway WebSocket Client ──────────────────────────────────────────────────
+
+class GatewayClient:
+    """WebSocket client for OpenClaw Gateway JSON-RPC protocol."""
+    
+    def __init__(self, host: str, port: int, token: str):
+        self.host = host
+        self.port = port
+        self.token = token
+        self.ws = None
+        self.connected = False
+        self.thread = None
+        self.nonce = None
+        self.pending_requests = {}  # request_id -> queue for responses
+        self.lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._reconnect_delay_s = 1.5
+        
+    def connect(self):
+        """Start WebSocket connection in background thread."""
+        if self.connected:
+            return True
+
+        if not (self.thread and self.thread.is_alive()):
+            self._stop_event.clear()
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+
+        # Wait max 5s for connection
+        for _ in range(50):
+            if self.connected:
+                return True
+            time.sleep(0.1)
+        return bool(self.connected)
+    
+    def disconnect(self):
+        """Stop WebSocket connection."""
+        self._stop_event.set()
+        if self.ws:
+            self.ws.close()
+        if self.thread:
+            self.thread.join(timeout=2)
+        self.connected = False
+    
+    def _run(self):
+        """WebSocket thread main loop with automatic reconnect."""
+        if websocket is None:
+            print("Gateway WebSocket unavailable: install websocket-client")
+            return
+        url = f"ws://{self.host}:{self.port}"
+        while not self._stop_event.is_set():
+            try:
+                self.ws = websocket.WebSocketApp(
+                    url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close
+                )
+                self.ws.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                print(f"Gateway WebSocket error: {e}")
+            finally:
+                self.connected = False
+                self.ws = None
+
+            if self._stop_event.is_set():
+                break
+            time.sleep(self._reconnect_delay_s)
+    
+    def _on_open(self, ws):
+        """WebSocket opened - wait for connect.challenge."""
+        pass
+    
+    def _on_message(self, ws, message):
+        """Handle incoming WebSocket messages."""
+        try:
+            data = json.loads(message)
+            msg_type = data.get("type")
+            
+            # Handle connect.challenge
+            if msg_type == "event" and data.get("event") == "connect.challenge":
+                self.nonce = data.get("payload", {}).get("nonce")
+                self._send_connect()
+            
+            # Handle connect response (hello-ok)
+            elif msg_type == "res":
+                req_id = data.get("id")
+                if data.get("ok") and data.get("payload", {}).get("type") == "hello-ok":
+                    self.connected = True
+                    print("Gateway WebSocket connected")
+                
+                # Deliver response to waiting request
+                with self.lock:
+                    if req_id in self.pending_requests:
+                        self.pending_requests[req_id].put(data)
+            
+            # Handle chat events (for live updates)
+            elif msg_type == "event" and data.get("event") == "chat":
+                pass  # Live chat events could be handled here
+                
+        except Exception as e:
+            print(f"Gateway message parse error: {e}")
+    
+    def _on_error(self, ws, error):
+        """WebSocket error."""
+        self.connected = False
+        print(f"Gateway WebSocket error: {error}")
+    
+    def _on_close(self, ws, close_status_code, close_msg):
+        """WebSocket closed."""
+        self.connected = False
+        print(f"Gateway WebSocket closed: {close_status_code} {close_msg}")
+    
+    def _send_connect(self):
+        """Send connect request with token auth."""
+        if not self.nonce:
+            return
+        
+        req_id = str(uuid.uuid4())
+        connect_req = {
+            "type": "req",
+            "id": req_id,
+            "method": "connect",
+            "params": {
+                "minProtocol": 3,
+                "maxProtocol": 3,
+                "client": {
+                    "id": "webchat-ui",
+                    "version": "1.0.0",
+                    "platform": "web",
+                    "mode": "webchat"
+                },
+                "role": "operator",
+                "scopes": ["operator.admin", "operator.write", "operator.read"],
+                "caps": [],
+                "commands": [],
+                "permissions": {},
+                "auth": {
+                    "token": self.token
+                }
+            }
+        }
+        
+        try:
+            self.ws.send(json.dumps(connect_req))
+        except Exception as e:
+            print(f"Failed to send connect: {e}")
+    
+    def send_chat(
+        self,
+        session_key: str,
+        message: str,
+        timeout_ms: int = 180000,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Send chat message via JSON-RPC chat.send method.
+        Returns response dict or error dict.
+        """
+        if not self.connected and not self.connect():
+            return {"ok": False, "error": "Gateway not connected"}
+        if not self.ws:
+            return {"ok": False, "error": "Gateway transport unavailable"}
+        
+        req_id = str(uuid.uuid4())
+        idem = str(idempotency_key or "").strip() or str(uuid.uuid4())
+        
+        request = {
+            "type": "req",
+            "id": req_id,
+            "method": "chat.send",
+            "params": {
+                "sessionKey": session_key,
+                "message": message,
+                "idempotencyKey": idem,
+                "deliver": False,
+                "thinking": "low",
+                "timeoutMs": timeout_ms
+            }
+        }
+        
+        # Create response queue
+        response_queue = queue.Queue()
+        with self.lock:
+            self.pending_requests[req_id] = response_queue
+        
+        try:
+            self.ws.send(json.dumps(request))
+            
+            # Wait for response (max 5s for ACK)
+            try:
+                response = response_queue.get(timeout=5.0)
+                return response
+            except queue.Empty:
+                return {"ok": False, "error": "Gateway timeout"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            with self.lock:
+                self.pending_requests.pop(req_id, None)
 
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 
@@ -940,6 +1378,12 @@ class Handler(BaseHTTPRequestHandler):
                 "generated_at":  now_ms(),
             })
 
+        elif path == "/api/config/gateway":
+            config = load_gateway_config()
+            # Never expose the gateway auth token to browser clients.
+            safe_config = {k: v for k, v in config.items() if k != "token"}
+            self.send_json(safe_config)
+
         elif path == "/app.ico" or path == "/favicon.ico":
             self.send_file(
                 Path(__file__).parent / "app.ico",
@@ -960,6 +1404,93 @@ class Handler(BaseHTTPRequestHandler):
             content_type, _ = mimetypes.guess_type(requested.name)
             self.send_file(requested, content_type or "application/octet-stream")
 
+        else:
+            self.send_error(404, "Not found")
+    
+    def do_POST(self):
+        """Handle POST requests."""
+        parsed = urlparse(self.path)
+        path   = parsed.path.rstrip("/") or "/"
+        
+        if not self._is_authorized():
+            self._send_auth_error(api_request=True, message="Unauthorized")
+            return
+        
+        if path == "/api/chat/send":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                data = json.loads(body)
+                
+                session_key = data.get("sessionKey")
+                message = data.get("message")
+                idempotency_key = str(data.get("idempotencyKey") or "").strip() or None
+                
+                if not session_key or not message:
+                    self.send_json({"ok": False, "error": "Missing sessionKey or message"}, 400)
+                    return
+                
+                # Get gateway client from server
+                gateway_client = getattr(self.server, "gateway_client", None)
+                if not gateway_client:
+                    self.send_json({"ok": False, "error": "Gateway not connected"}, 503)
+                    return
+
+                # Best effort: lazily reconnect if the socket dropped after startup.
+                if not gateway_client.connected and not gateway_client.connect():
+                    self.send_json({"ok": False, "error": "Gateway not connected"}, 503)
+                    return
+
+                # Best-effort duplicate protection for accidental double submits.
+                # If same session+message arrives within 2s, return cached ACK.
+                dedupe_window_s = 2.0
+                dedupe_key = hashlib.sha256(f"{session_key}\n{message}".encode("utf-8")).hexdigest()
+                now_ts = time.monotonic()
+                with self.server.chat_send_lock:
+                    recent = self.server.chat_send_recent
+                    # prune old cache entries
+                    for k, v in list(recent.items()):
+                        if now_ts - float(v.get("ts", 0.0)) > 15.0:
+                            recent.pop(k, None)
+                    cached = recent.get(dedupe_key)
+                    if cached and (now_ts - float(cached.get("ts", 0.0)) <= dedupe_window_s):
+                        cached_result = dict(cached.get("result", {}))
+                        if cached_result.get("ok"):
+                            cached_result["deduped"] = True
+                            self.send_json(cached_result)
+                            return
+                
+                # Send message via gateway
+                response = gateway_client.send_chat(
+                    session_key,
+                    message,
+                    idempotency_key=idempotency_key,
+                )
+                
+                if response.get("ok"):
+                    result = {
+                        "ok": True,
+                        "runId": response.get("payload", {}).get("runId"),
+                        "status": response.get("payload", {}).get("status"),
+                    }
+                    with self.server.chat_send_lock:
+                        self.server.chat_send_recent[dedupe_key] = {
+                            "ts": now_ts,
+                            "result": result,
+                        }
+                    self.send_json(result)
+                else:
+                    err_msg = str(response.get("error", "Unknown error"))
+                    err_status = 503 if "not connected" in err_msg.lower() else 500
+                    self.send_json({
+                        "ok": False,
+                        "error": err_msg
+                    }, err_status)
+                    
+            except json.JSONDecodeError:
+                self.send_json({"ok": False, "error": "Invalid JSON"}, 400)
+            except Exception as e:
+                self.send_json({"ok": False, "error": str(e)}, 500)
         else:
             self.send_error(404, "Not found")
 
@@ -1019,6 +1550,32 @@ def main():
 
     server = SessionwatcherHTTPServer((args.bind, args.port), Handler)
     server.access_token = access_token
+    server.chat_send_lock = threading.Lock()
+    server.chat_send_recent = {}
+    
+    # Initialize Gateway WebSocket client
+    gateway_config = load_gateway_config()
+    if websocket is None:
+        print("websocket-client not installed: chat features disabled")
+        server.gateway_client = None
+    elif gateway_config.get("available"):
+        gateway_client = GatewayClient(
+            host=gateway_config["bind"],
+            port=gateway_config["port"],
+            token=gateway_config["token"]
+        )
+        server.gateway_client = gateway_client
+        
+        # Start connection in background
+        print(f"Connecting to OpenClaw Gateway at {gateway_config['bind']}:{gateway_config['port']}...")
+        if gateway_client.connect():
+            print("Gateway connection established")
+        else:
+            print("Gateway connection failed (chat features disabled)")
+    else:
+        print(f"Gateway not available: {gateway_config.get('error', 'unknown')} (chat features disabled)")
+        server.gateway_client = None
+    
     url = f"http://{args.bind}:{args.port}"
     print(f"OpenClaw Session Watcher running → {url}")
     print(f"OpenClaw dir: {OPENCLAW_DIR}")
@@ -1035,7 +1592,10 @@ def main():
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nStopping...")
+        if hasattr(server, 'gateway_client') and server.gateway_client:
+            server.gateway_client.disconnect()
+        print("Stopped.")
 
 if __name__ == "__main__":
     main()

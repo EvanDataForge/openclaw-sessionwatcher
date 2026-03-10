@@ -35,6 +35,12 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - ✓/✗ Tool results with trimmed preview + **(show all)** — fetched on demand, persists across auto-refresh
   - ⚡ Session event markers (`/thinking`, model changes)
 - **Chat-only toggle** — hides thinking/tool blocks instantly; button color reflects current state (green = all messages, red = chat only)
+- Optional chat input for sending messages to the selected session via OpenClaw Gateway
+  - Idempotency key per send to reduce accidental duplicates
+  - Backend duplicate-ACK window for quick double-submits
+  - Automatic gateway reconnect when WebSocket drops
+  - Inline send status rendered above the input (no layout jump)
+- User source detection for inbound user bubbles (`Direct` vs `Telegram`) with distinct labels/colors
 - Full message history — entire session loaded, no truncation cap
 - Raw JSON modal for every message
 - Copy button for session/message IDs
@@ -46,6 +52,18 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - Update source indicator: `↻` for periodic refresh, `•` for live push
 - **Burger menu** (top right) — About dialog + Report an Issue (opens GitHub issue template chooser)
 - Zero external dependencies — pure Python stdlib + vanilla JS
+  - Optional: `websocket-client` enables gateway chat send features
+
+---
+
+## Release 1.2 Highlights
+
+- Added gateway-backed chat send endpoint and UI (`POST /api/chat/send`)
+- Added resilient gateway connection handling (auto-reconnect + lazy reconnect on send)
+- Fixed duplicate user-message rendering caused by retry/fallback append behavior
+- Improved session-type stability so Telegram sessions stay Telegram even after transient webchat metadata
+- Added gateway timestamp-prefix cleanup for user text rendering
+- Added user-source classification (`direct`/`telegram`) for differentiated bubble styling
 
 ---
 
@@ -53,6 +71,7 @@ Dark mode is the default. An optional light mode is available for brighter envir
 
 - Python 3.9 or newer (no third-party packages needed)
 - An OpenClaw installation with agents writing sessions to `~/.openclaw/agents/`
+- Optional for chat send from the Session Watcher UI: `websocket-client`
 
 ---
 
@@ -65,6 +84,12 @@ cd openclaw-sessionwatcher
 ```
 
 That's it. No `pip install`, no build step.
+
+If you want to send chat messages from the dashboard UI, install the optional package:
+
+```bash
+python3 -m pip install websocket-client
+```
 
 ---
 
@@ -201,8 +226,12 @@ Control commands:
   │  load_all_sessions()        │  reads sessions.json + tail of each JSONL
   │  parse_messages()           │  structures raw entries into display records
   │  _tool_result_preview()     │  trims large tool results to 300 chars
+  │  _dedupe_retry_user_messages() │ collapses retry duplicate user entries
   │  strip_metadata()           │  removes gateway metadata headers
+  │  strip_gateway_time_prefix()│  removes leading [Tue ... GMT+X] prefix
+  │  classify_user_source()     │  marks user message source as direct/telegram
   │  strip_markers()            │  removes [[...]] markers from text
+  │  load_gateway_config()      │  reads gateway settings from openclaw.json
   └────────────┬────────────────┘
                │  JSON API
                ▼
@@ -212,6 +241,8 @@ Control commands:
   │  GET /api/sessions/:id/messages            │  full message stream for one session
   │  GET /api/sessions/:id/events              │  SSE stream for live file change notifications
   │  GET /api/sessions/:id/entry/:eid/full     │  full text of one entry (on demand)
+  │  GET /api/config/gateway                   │  gateway availability/config (token redacted)
+  │  POST /api/chat/send                       │  send message to selected session key
   │  GET /api/status                           │  health check
   └─────────────────────────────┘
 ```

@@ -492,6 +492,8 @@
     letter-spacing: .04em;
   }
   .msg-role.user      { color: var(--teal); }
+  .msg-role.user.source-telegram { color: var(--green); }
+  .msg-role.user.source-direct { color: var(--teal); }
   .msg-role.assistant { color: var(--purple); }
   .msg-role.toolresult { color: var(--green); }
   .msg-model { color: var(--muted); }
@@ -550,6 +552,11 @@
     border-radius: 18px 18px 5px 18px;
     color: #d4e4ff;
   }
+  .msg-bubble.user.source-telegram .msg-body {
+    background: rgba(40,184,110,.16);
+    border-color: rgba(40,184,110,.34);
+    color: #d6ffea;
+  }
   .msg-bubble.assistant .msg-body {
     background: rgba(255,255,255,.055);
     border-color: rgba(255,255,255,.09);
@@ -560,6 +567,11 @@
     background: rgba(37,99,235,.14);
     border-color: rgba(37,99,235,.25);
     color: #1e3a8a;
+  }
+  body.light .msg-bubble.user.source-telegram .msg-body {
+    background: rgba(22,163,74,.12);
+    border-color: rgba(22,163,74,.24);
+    color: #14532d;
   }
   body.light .msg-bubble.assistant .msg-body {
     background: rgba(15,23,42,.04);
@@ -893,6 +905,74 @@
   .empty-icon { font-size: 32px; opacity: .4; }
   .empty-text { font-size: 12px; }
 
+  /* ── Chat Input ───────────────────────────────────────── */
+  #chat-input-area {
+    border-top: none;
+    padding: 6px 18px 8px;
+    flex-shrink: 0;
+    background: transparent;
+  }
+  #chat-form {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  #chat-input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 8px 16px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  #chat-input:focus {
+    border-color: var(--accent);
+  }
+  #chat-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  #chat-send-btn {
+    background: var(--accent);
+    border: none;
+    border-radius: 50%;
+    color: white;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 700;
+    transition: opacity .15s, transform .15s;
+    flex-shrink: 0;
+  }
+  #chat-send-btn:hover:not(:disabled) {
+    opacity: 0.9;
+    transform: scale(1.05);
+  }
+  #chat-send-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  #chat-status {
+    margin: 0 0 4px;
+    font-size: 10px;
+    line-height: 1.2;
+    color: var(--red);
+    min-height: 12px;
+    visibility: hidden;
+  }
+  #chat-status:not(:empty) { visibility: visible; }
+  #chat-status.success {
+    color: var(--green);
+  }
+
   /* ── Loading ──────────────────────────────────────────── */
   .loader {
     display: flex;
@@ -1154,7 +1234,15 @@
         <div class="empty-icon">📡</div>
         <div class="empty-text">Select a session to view messages</div>
       </div>
-    </div>    <button id="scroll-btn" onclick="Scroll.toBottom()">↓ To bottom</button>  </div>
+    </div>    <button id="scroll-btn" onclick="Scroll.toBottom()">↓ To bottom</button>
+    <div id="chat-input-area" style="display:none;">
+      <div id="chat-status"></div>
+      <form id="chat-form" onsubmit="ChatInput.submitChat(event)">
+        <input type="text" id="chat-input" placeholder="Nachricht an Session senden..." autocomplete="off" />
+        <button type="submit" id="chat-send-btn">↑</button>
+      </form>
+    </div>
+  </div>
 
 </div>
 
@@ -1208,6 +1296,8 @@ const State = {
   detailFallbackStep: 0,
   detailLoadToken: 0,
   detailEntrySignatures: {},
+  gatewayAvailable: false, // Gateway connection available
+  gatewaySending: false,   // Chat message send in progress
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1251,6 +1341,149 @@ const API = {
   eventsUrl(sessionId) {
     // Add timestamp to prevent browser caching of SSE endpoint
     return `/api/sessions/${sessionId}/events?_t=${Date.now()}`;
+  },
+  async post(path, data) {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'same-origin',
+      body: JSON.stringify(data)
+    });
+    if (r.ok) return r.json();
+    
+    let payload = null;
+    try {
+      payload = await r.json();
+    } catch (_) {}
+    
+    throw new ApiError(payload?.error || `API error (${r.status})`, r.status, payload);
+  },
+  async gatewayConfig() {
+    return this.request('/api/config/gateway');
+  },
+  async sendChat(sessionKey, message, idempotencyKey) {
+    return this.post('/api/chat/send', { sessionKey, message, idempotencyKey });
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat Input
+// ─────────────────────────────────────────────────────────────────────────────
+const ChatInput = {
+  _lastSubmitSig: '',
+  _lastSubmitAtMs: 0,
+
+  _makeIdempotencyKey(sessionKey, text) {
+    const base = `${sessionKey}|${text}|${Date.now()}`;
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return `sw-${window.crypto.randomUUID()}`;
+    }
+    return `sw-${base}-${Math.random().toString(36).slice(2, 10)}`;
+  },
+
+  async submitChat(event) {
+    event.preventDefault();
+    
+    const input = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('chat-send-btn');
+    const status = document.getElementById('chat-status');
+    const text = input.value.trim();
+    
+    if (!text || State.gatewaySending) return;
+    
+    // Get current session
+    const currentSession = State.sessions.find(s => s.session_id === State.detailSessionId);
+    if (!currentSession) {
+      this.showStatus('No session selected', false);
+      return;
+    }
+    
+    // Route strictly to the selected session's canonical key.
+    // `session_key` can be a mapped/display value for some session types.
+    const sessionKey = currentSession.key || currentSession.session_key;
+    if (!sessionKey) {
+      this.showStatus('Session has no valid session key', false);
+      return;
+    }
+
+    // Guard against accidental double submit of the same message.
+    const nowMs = Date.now();
+    const submitSig = `${sessionKey}\n${text}`;
+    if (submitSig === this._lastSubmitSig && nowMs - this._lastSubmitAtMs < 1200) {
+      return;
+    }
+    this._lastSubmitSig = submitSig;
+    this._lastSubmitAtMs = nowMs;
+    const idempotencyKey = this._makeIdempotencyKey(sessionKey, text);
+    
+    // Send message
+    State.gatewaySending = true;
+    input.disabled = true;
+    sendBtn.disabled = true;
+    status.textContent = '';
+    
+    try {
+      const response = await API.sendChat(sessionKey, text, idempotencyKey);
+      
+      if (response.ok) {
+        input.value = '';
+        this.showStatus('Message sent', true);
+        
+        // Reload messages after short delay
+        setTimeout(() => {
+          if (State.detailSessionId === currentSession.session_id) {
+            App.refresh(true);
+          }
+        }, 500);
+      } else {
+        this.showStatus(`Error: ${response.error}`, false);
+      }
+    } catch (error) {
+      this.showStatus(`Error: ${error.message}`, false);
+    } finally {
+      State.gatewaySending = false;
+      input.disabled = false;
+      sendBtn.disabled = false;
+      
+      // Clear status after 3s
+      setTimeout(() => {
+        if (status.classList.contains('success')) {
+          status.textContent = '';
+        }
+      }, 3000);
+    }
+  },
+  
+  showStatus(message, success) {
+    const status = document.getElementById('chat-status');
+    if (status) {
+      status.textContent = message;
+      status.className = success ? 'success' : '';
+    }
+  },
+  
+  show() {
+    const area = document.getElementById('chat-input-area');
+    if (area) {
+      area.style.display = 'block';
+      // Auto-focus input
+      const input = document.getElementById('chat-input');
+      if (input) input.focus();
+    }
+  },
+  
+  hide() {
+    const area = document.getElementById('chat-input-area');
+    if (area) {
+      area.style.display = 'none';
+      // Clear input
+      const input = document.getElementById('chat-input');
+      if (input) input.value = '';
+      const status = document.getElementById('chat-status');
+      if (status) status.textContent = '';
+    }
   },
 };
 
@@ -1823,11 +2056,14 @@ function renderMessages(messages, transitions = {}) {
     // ── User bubble ──
     if (m.role === 'user') {
       const text = m.text || (m.blocks||[]).filter(b=>b.kind==='text').map(b=>b.text).join('\n') || '';
+      const sourceChannel = (m.source_channel || 'unknown').toLowerCase();
+      const sourceClass = ['direct', 'telegram'].includes(sourceChannel) ? ` source-${sourceChannel}` : ' source-unknown';
+      const sourceLabel = sourceChannel === 'telegram' ? 'Telegram' : (sourceChannel === 'direct' ? 'Direct' : 'You');
       RawStore[idx] = m.raw_json || '';
       if (!text.trim()) return '';
-      return `<div class="msg-bubble user${transitionClass}" data-msgidx="${idx}">
+      return `<div class="msg-bubble user${sourceClass}${transitionClass}" data-msgidx="${idx}">
         <div class="msg-header">
-          <span class="msg-role user">You</span>
+          <span class="msg-role user${sourceClass}">${esc(sourceLabel)}</span>
           <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
           ${m.id ? `<button class="copy-btn" onclick="openRawModal(${idx}, this)" title="Raw JSON">{raw}</button>` : ''}
         </div>
@@ -1972,6 +2208,21 @@ const App = {
   async init() {
     Theme.init();
     Scroll.init();
+    
+    // Check Gateway availability
+    try {
+      const config = await API.gatewayConfig();
+      State.gatewayAvailable = config.available === true;
+      if (State.gatewayAvailable) {
+        console.log('Gateway connection available');
+      } else {
+        console.log('Gateway not available:', config.error || 'unknown error');
+      }
+    } catch (error) {
+      console.error('Failed to check gateway config:', error);
+      State.gatewayAvailable = false;
+    }
+    
     window.addEventListener('beforeunload', () => {
       this._closeDetailStream();
       this._stopDetailFallback();
@@ -2123,6 +2374,13 @@ const App = {
 
     await this._loadDetail(s, false, 'select');
     this._openDetailStream(sessionId);
+    
+    // Show/hide chat input based on gateway availability
+    if (State.gatewayAvailable) {
+      ChatInput.show();
+    } else {
+      ChatInput.hide();
+    }
   },
 
   _closeDetailStream() {
