@@ -18,8 +18,14 @@ PORT="${SESSIONWATCHER_PORT:-8090}"
 BIND="${SESSIONWATCHER_BIND:-127.0.0.1}"
 ACCESS_TOKEN="${SESSIONWATCHER_ACCESS_TOKEN:-}"
 LOG="$DIR/logs/server.log"
+PYTHON_BIN_DEFAULT="$DIR/../.venv/bin/python"
+PYTHON_BIN="${SESSIONWATCHER_PYTHON:-$PYTHON_BIN_DEFAULT}"
 
 mkdir -p "$DIR/logs"
+
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(command -v python3)"
+fi
 
 LAUNCH_LABEL="com.openclaw.sessionwatcher"
 LAUNCH_TARGET="gui/$(id -u)/$LAUNCH_LABEL"
@@ -82,7 +88,7 @@ echo "Starting OpenClaw Session Watcher on http://$BIND:$PORT"
 if [ -n "$ACCESS_TOKEN" ]; then
   echo "Access protection: enabled"
 fi
-nohup python3 "$DIR/server.py" --port "$PORT" --bind "$BIND" >> "$LOG" 2>&1 &
+nohup "$PYTHON_BIN" "$DIR/server.py" --port "$PORT" --bind "$BIND" >> "$LOG" 2>&1 &
 PID=$!
 echo "PID: $PID"
 echo "$PID" > "$DIR/server.pid"

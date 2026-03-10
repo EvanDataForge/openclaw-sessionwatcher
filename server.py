@@ -428,6 +428,64 @@ def load_gateway_config() -> dict:
     except Exception as e:
         return {"available": False, "error": f"Failed to load config: {e}"}
 
+def create_gateway_client_from_runtime() -> "GatewayClient | None":
+    """Create a GatewayClient from current runtime config when possible."""
+    if websocket is None:
+        return None
+
+    gateway_config = load_gateway_config()
+    if not gateway_config.get("available"):
+        return None
+
+    return GatewayClient(
+        host=gateway_config["bind"],
+        port=gateway_config["port"],
+        token=gateway_config["token"],
+    )
+
+def ensure_server_gateway_client(
+    server_obj,
+    *,
+    max_attempts: int = 3,
+    wait_per_attempt_s: float = 1.5,
+    retry_delay_s: float = 2.0,
+):
+    """Return a connected gateway client, recreating it if needed."""
+    lock = getattr(server_obj, "gateway_client_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        server_obj.gateway_client_lock = lock
+
+    with lock:
+        client = getattr(server_obj, "gateway_client", None)
+        if client is None:
+            client = create_gateway_client_from_runtime()
+            server_obj.gateway_client = client
+
+        if client and client.ensure_connected(
+            max_attempts=max_attempts,
+            wait_per_attempt_s=wait_per_attempt_s,
+            retry_delay_s=retry_delay_s,
+        ):
+            return client
+
+        if client is not None:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+
+        fresh_client = create_gateway_client_from_runtime()
+        server_obj.gateway_client = fresh_client
+        if fresh_client and fresh_client.ensure_connected(
+            max_attempts=max_attempts,
+            wait_per_attempt_s=wait_per_attempt_s,
+            retry_delay_s=retry_delay_s,
+        ):
+            return fresh_client
+
+        return None
+
 def tail_jsonl(path: Path, n: int = 200) -> list[dict]:
     """Read last n lines from a JSONL file (handles large files efficiently)."""
     if not path.exists():
@@ -554,6 +612,56 @@ def _dedupe_retry_user_messages(msgs: list[dict]) -> list[dict]:
 
     return filtered
 
+def _short_text(value, limit: int = 140) -> str:
+    """Return compact, single-line text for event previews."""
+    if value is None:
+        s = "null"
+    elif isinstance(value, (str, int, float, bool)):
+        s = str(value)
+    elif isinstance(value, dict):
+        keys = [str(k) for k in value.keys()]
+        if keys:
+            shown = ", ".join(keys[:4])
+            s = "{" + shown + (", ..." if len(keys) > 4 else "") + "}"
+        else:
+            s = "{}"
+    elif isinstance(value, list):
+        s = f"[{len(value)} items]"
+    else:
+        s = str(value)
+
+    s = " ".join(s.split())
+    return s[:limit] + ("…" if len(s) > limit else "")
+
+def _message_content_preview(content) -> str:
+    """Extract a concise message preview from OpenClaw message content."""
+    if isinstance(content, str):
+        return _short_text(content, 160)
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = str(block.get("type", ""))
+            if btype == "text":
+                txt = str(block.get("text", "")).strip()
+                if txt:
+                    parts.append(txt)
+            elif btype == "thinking":
+                txt = str(block.get("thinking", "")).strip()
+                if txt:
+                    parts.append(f"[thinking] {txt}")
+            elif btype == "toolCall":
+                name = str(block.get("name", "?")).strip() or "?"
+                parts.append(f"[toolCall] {name}")
+            elif btype == "toolResult":
+                name = str(block.get("toolName", "?")).strip() or "?"
+                parts.append(f"[toolResult] {name}")
+            if len(parts) >= 2:
+                break
+        return _short_text(" | ".join(parts), 160)
+    return _short_text(content, 160)
+
 def parse_messages(entries: list[dict]) -> list[dict]:
     """Extract display-friendly message records from raw JSONL entries."""
     msgs = []
@@ -586,6 +694,26 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             })
             continue
 
+        if etype == "session":
+            version = entry.get("version")
+            cwd = str(entry.get("cwd", "")).strip()
+            cwd_label = Path(cwd).name if cwd else ""
+            parts = ["session started"]
+            if version not in (None, ""):
+                parts.append(f"v{version}")
+            if cwd_label:
+                parts.append(f"cwd:{cwd_label}")
+            msgs.append({
+                "id":         entry.get("id", ""),
+                "role":       "event",
+                "event_type": "session",
+                "text":       " · ".join(parts),
+                "ts_iso":     entry.get("timestamp", ""),
+                "ts_fmt":     fmt_iso(entry.get("timestamp", "")),
+                "raw_json":   json.dumps(entry, ensure_ascii=False),
+            })
+            continue
+
         if etype == "custom":
             custom_type = entry.get("customType", "")
             data = entry.get("data", {})
@@ -602,14 +730,69 @@ def parse_messages(entries: list[dict]) -> list[dict]:
                     "ts_fmt":     fmt_iso(entry.get("timestamp", "")),
                     "raw_json":   json.dumps(entry, ensure_ascii=False),
                 })
-            # model-snapshot and other custom types: silently skip
+                continue
+
+            if custom_type == "model-snapshot":
+                provider = str((data or {}).get("provider", "")).strip()
+                model_id = str((data or {}).get("modelId", "")).strip() or str((data or {}).get("model", "")).strip()
+                model_api = str((data or {}).get("modelApi", "")).strip()
+                model_name = model_id or "?"
+                model_with_provider = f"{provider}/{model_name}" if provider else model_name
+                suffix = f" ({model_api})" if model_api else ""
+                msgs.append({
+                    "id":         entry.get("id", ""),
+                    "role":       "event",
+                    "event_type": "model",
+                    "text":       f"model snapshot → {model_with_provider}{suffix}",
+                    "ts_iso":     entry.get("timestamp", ""),
+                    "ts_fmt":     fmt_iso(entry.get("timestamp", "")),
+                    "raw_json":   json.dumps(entry, ensure_ascii=False),
+                })
+                continue
+
+            # Fallback for all other custom records.
+            preview = _short_text(data, 140)
+            custom_label = custom_type or "unknown"
+            text = f"custom:{custom_label}" + (f" · {preview}" if preview else "")
+            msgs.append({
+                "id":         entry.get("id", ""),
+                "role":       "event",
+                "event_type": "custom",
+                "text":       text,
+                "ts_iso":     entry.get("timestamp", ""),
+                "ts_fmt":     fmt_iso(entry.get("timestamp", "")),
+                "raw_json":   json.dumps(entry, ensure_ascii=False),
+            })
             continue
 
         if etype != "message":
+            preview = _short_text({
+                "type": etype,
+                "id": entry.get("id", ""),
+                "parentId": entry.get("parentId", ""),
+            }, 120)
+            msgs.append({
+                "id":         entry.get("id", ""),
+                "role":       "event",
+                "event_type": "meta",
+                "text":       f"entry:{etype or 'unknown'} · {preview}",
+                "ts_iso":     entry.get("timestamp", ""),
+                "ts_fmt":     fmt_iso(entry.get("timestamp", "")),
+                "raw_json":   json.dumps(entry, ensure_ascii=False),
+            })
             continue
         msg = entry.get("message", {})
         role = msg.get("role", "")
         if role not in ("user", "assistant", "toolResult"):
+            msgs.append({
+                "id":         entry.get("id", ""),
+                "role":       "event",
+                "event_type": "meta",
+                "text":       f"message role:{role or 'unknown'} · {_message_content_preview(msg.get('content', ''))}",
+                "ts_iso":     entry.get("timestamp", ""),
+                "ts_fmt":     fmt_iso(entry.get("timestamp", "")),
+                "raw_json":   json.dumps(entry, ensure_ascii=False),
+            })
             continue
 
         raw_json = json.dumps(entry, ensure_ascii=False)
@@ -639,6 +822,7 @@ def parse_messages(entries: list[dict]) -> list[dict]:
                 "source_channel": "unknown",
                 "source_label": "",
                 "source_id": "",
+                "error_message": "",
                 "blocks": [],
             })
             continue
@@ -688,6 +872,13 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             "source_id": "",
         }
         usage = msg.get("usage", {})
+        raw_error_message = msg.get("errorMessage", msg.get("error_message", ""))
+        if isinstance(raw_error_message, str):
+            error_message = raw_error_message.strip()
+        elif raw_error_message is None:
+            error_message = ""
+        else:
+            error_message = str(raw_error_message)
         cost_obj = usage.get("cost", {})
         cost = 0.0
         if isinstance(cost_obj, dict):
@@ -717,7 +908,8 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             "ts_iso":       entry.get("timestamp", ""),
             "ts_fmt":       fmt_iso(entry.get("timestamp", "")),
             "model":        friendly_model(msg.get("model", "")),
-            "stop_reason":  msg.get("stopReason", ""),
+            "stop_reason":  msg.get("stopReason", msg.get("stop_reason", "")),
+            "error_message": error_message,
             "input_tok":    usage.get("input", 0),
             "output_tok":   usage.get("output", 0),
             "cost":         round(cost, 6),
@@ -916,8 +1108,8 @@ class GatewayClient:
         self._stop_event = threading.Event()
         self._reconnect_delay_s = 1.5
         
-    def connect(self):
-        """Start WebSocket connection in background thread."""
+    def connect(self, wait_s: float = 5.0):
+        """Start WebSocket connection in background thread and wait briefly."""
         if self.connected:
             return True
 
@@ -926,11 +1118,40 @@ class GatewayClient:
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
 
-        # Wait max 5s for connection
-        for _ in range(50):
+        wait_s = max(0.2, float(wait_s or 0.0))
+        poll_steps = max(1, int(wait_s / 0.1))
+        # Wait for websocket hello-ok handshake.
+        for _ in range(poll_steps):
             if self.connected:
                 return True
             time.sleep(0.1)
+        return bool(self.connected)
+
+    def ensure_connected(
+        self,
+        max_attempts: int = 3,
+        wait_per_attempt_s: float = 1.5,
+        retry_delay_s: float = 2.0,
+    ) -> bool:
+        """Try to establish gateway connection with bounded retries."""
+        attempts = max(1, int(max_attempts or 1))
+        wait_per_attempt_s = max(0.2, float(wait_per_attempt_s or 0.0))
+        retry_delay_s = max(0.0, float(retry_delay_s or 0.0))
+
+        for attempt in range(1, attempts + 1):
+            if self.connected:
+                return True
+
+            if self.connect(wait_s=wait_per_attempt_s):
+                return True
+
+            if attempt < attempts and retry_delay_s > 0:
+                print(
+                    f"Gateway reconnect attempt {attempt}/{attempts} failed; "
+                    f"retrying in {retry_delay_s:.1f}s"
+                )
+                time.sleep(retry_delay_s)
+
         return bool(self.connected)
     
     def disconnect(self):
@@ -1057,7 +1278,11 @@ class GatewayClient:
         """Send chat message via JSON-RPC chat.send method.
         Returns response dict or error dict.
         """
-        if not self.connected and not self.connect():
+        if not self.connected and not self.ensure_connected(
+            max_attempts=2,
+            wait_per_attempt_s=1.2,
+            retry_delay_s=1.5,
+        ):
             return {"ok": False, "error": "Gateway not connected"}
         if not self.ws:
             return {"ok": False, "error": "Gateway transport unavailable"}
@@ -1430,14 +1655,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "Missing sessionKey or message"}, 400)
                     return
                 
-                # Get gateway client from server
-                gateway_client = getattr(self.server, "gateway_client", None)
+                gateway_client = ensure_server_gateway_client(
+                    self.server,
+                    max_attempts=3,
+                    wait_per_attempt_s=1.5,
+                    retry_delay_s=2.0,
+                )
                 if not gateway_client:
-                    self.send_json({"ok": False, "error": "Gateway not connected"}, 503)
-                    return
-
-                # Best effort: lazily reconnect if the socket dropped after startup.
-                if not gateway_client.connected and not gateway_client.connect():
                     self.send_json({"ok": False, "error": "Gateway not connected"}, 503)
                     return
 
@@ -1552,29 +1776,24 @@ def main():
     server.access_token = access_token
     server.chat_send_lock = threading.Lock()
     server.chat_send_recent = {}
+    server.gateway_client_lock = threading.Lock()
     
     # Initialize Gateway WebSocket client
-    gateway_config = load_gateway_config()
     if websocket is None:
         print("websocket-client not installed: chat features disabled")
         server.gateway_client = None
-    elif gateway_config.get("available"):
-        gateway_client = GatewayClient(
-            host=gateway_config["bind"],
-            port=gateway_config["port"],
-            token=gateway_config["token"]
-        )
-        server.gateway_client = gateway_client
-        
-        # Start connection in background
-        print(f"Connecting to OpenClaw Gateway at {gateway_config['bind']}:{gateway_config['port']}...")
-        if gateway_client.connect():
-            print("Gateway connection established")
-        else:
-            print("Gateway connection failed (chat features disabled)")
     else:
-        print(f"Gateway not available: {gateway_config.get('error', 'unknown')} (chat features disabled)")
-        server.gateway_client = None
+        gateway_config = load_gateway_config()
+        gateway_client = create_gateway_client_from_runtime()
+        server.gateway_client = gateway_client
+        if gateway_client is None:
+            print(f"Gateway not available: {gateway_config.get('error', 'unknown')} (chat features disabled)")
+        else:
+            print(f"Connecting to OpenClaw Gateway at {gateway_config['bind']}:{gateway_config['port']}...")
+            if gateway_client.connect():
+                print("Gateway connection established")
+            else:
+                print("Gateway connection failed at startup; will retry on demand")
     
     url = f"http://{args.bind}:{args.port}"
     print(f"OpenClaw Session Watcher running → {url}")

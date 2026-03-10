@@ -33,7 +33,7 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - Thinking blocks (individually collapsible; notice shown when Anthropic encrypts content)
   - ⚙ Tool calls with arguments (truncated at 300 chars with inline **show all**)
   - ✓/✗ Tool results with trimmed preview + **(show all)** — fetched on demand, persists across auto-refresh
-  - ⚡ Session event markers (`/thinking`, model changes)
+  - ⚡ Session event markers (`thinking`, model changes, prompt errors, session/custom/meta fallbacks)
 - **Chat-only toggle** — hides thinking/tool blocks instantly; button color reflects current state (green = all messages, red = chat only)
 - Optional chat input for sending messages to the selected session via OpenClaw Gateway
   - Idempotency key per send to reduce accidental duplicates
@@ -52,7 +52,7 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - Update source indicator: `↻` for periodic refresh, `•` for live push
 - **Burger menu** (top right) — About dialog + Report an Issue (opens GitHub issue template chooser)
 - Zero external dependencies — pure Python stdlib + vanilla JS
-  - Optional: `websocket-client` enables gateway chat send features
+  - Optional: `websocket-client` enables gateway chat send features (must be installed in the same Python interpreter used to run `server.py`)
 
 ---
 
@@ -64,6 +64,9 @@ Dark mode is the default. An optional light mode is available for brighter envir
 - Improved session-type stability so Telegram sessions stay Telegram even after transient webchat metadata
 - Added gateway timestamp-prefix cleanup for user text rendering
 - Added user-source classification (`direct`/`telegram`) for differentiated bubble styling
+- Added event rendering for `session`, `custom:model-snapshot`, and unknown entry fallbacks (instead of silent drops)
+- Improved assistant error visibility when assistant content is empty
+- Switched UI activity age to last visible JSONL entry timestamp before metadata fallback
 
 ---
 
@@ -71,7 +74,7 @@ Dark mode is the default. An optional light mode is available for brighter envir
 
 - Python 3.9 or newer (no third-party packages needed)
 - An OpenClaw installation with agents writing sessions to `~/.openclaw/agents/`
-- Optional for chat send from the Session Watcher UI: `websocket-client`
+- Optional for chat send from the Session Watcher UI: `websocket-client` in the runtime interpreter
 
 ---
 
@@ -88,8 +91,10 @@ That's it. No `pip install`, no build step.
 If you want to send chat messages from the dashboard UI, install the optional package:
 
 ```bash
-python3 -m pip install websocket-client
+./../.venv/bin/python -m pip install websocket-client
 ```
+
+If you use a different interpreter for SessionWatcher, install `websocket-client` there instead.
 
 ---
 
@@ -107,6 +112,12 @@ Or start manually:
 
 ```bash
 python3 server.py
+```
+
+`start.sh` prefers `../.venv/bin/python` automatically. You can override with:
+
+```bash
+SESSIONWATCHER_PYTHON=/path/to/python ./start.sh
 ```
 
 ### Stop
@@ -145,6 +156,7 @@ sw-logs
 | `SESSIONWATCHER_PORT`     | `8090`        | HTTP port to listen on             |
 | `SESSIONWATCHER_BIND`     | `127.0.0.1`   | Bind address (use `0.0.0.0` for LAN) |
 | `SESSIONWATCHER_ACCESS_TOKEN` | _(empty)_ | Required for non-loopback/LAN bind; enables cookie-based access protection |
+| `SESSIONWATCHER_PYTHON`   | `../.venv/bin/python` if present, else `python3` | Python executable used by `start.sh` |
 
 Example — expose on LAN safely, with a custom OpenClaw dir:
 
@@ -257,6 +269,8 @@ Sessions are loaded from all agents under `$OPENCLAW_DIR/agents/`. Only sessions
 | Recent (< 10 min) + no stop | 🟢 Green, blinking |
 | Older (> 10 min) | 🟤 Dark red |
 
+"Last activity" in the UI is based on the last visible JSONL message timestamp (`last_ts_iso`) when available, and only falls back to `sessions.json.updatedAt` otherwise.
+
 ### Message parsing
 
 Each JSONL entry is classified by its `type` field:
@@ -266,13 +280,38 @@ Each JSONL entry is classified by its `type` field:
 | `message` (role: user/assistant/toolResult) | Message bubble |
 | `thinking_level_change` | ⚡ Event marker |
 | `model_change` | ⚡ Event marker |
-| `custom` | Skipped |
+| `session` | ⚡ Event marker (`session started …`) |
+| `custom` (`openclaw:prompt-error`) | ⚡ Event marker (`prompt error …`) |
+| `custom` (`model-snapshot`) | ⚡ Event marker (`model snapshot …`) |
+| `custom` (other) | ⚡ Event marker (`custom:<type> …`) |
+| unknown non-`message` type | ⚡ Event marker (`entry:<type> …`) |
+
+Unknown `message.role` values are rendered as `meta` event markers with a short content preview instead of being silently dropped.
 
 Assistant messages are further decomposed into typed blocks:
 - `text` → chat bubble
 - `thinking` → collapsible thinking block (encrypted content flagged automatically)
 - `toolCall` → tool call with formatted arguments, truncated + expandable
 - `toolResult` (embedded) → result preview, full text fetchable on demand
+
+ToolResult entries also expose detail status (`ok/error/failed/running/accepted/completed`) and assistant errors (`errorMessage`) are surfaced even when assistant text content is empty.
+
+### Troubleshooting: `Gateway not connected` (HTTP 503)
+
+1. Verify the running interpreter can import `websocket` (`websocket-client` package).
+2. If using LaunchAgent, check runtime program path:
+
+```bash
+launchctl print gui/$(id -u)/com.openclaw.sessionwatcher | sed -n '1,80p'
+```
+
+3. Ensure `ProgramArguments[0]` points to the same interpreter where `websocket-client` is installed.
+4. Reload the agent after changes:
+
+```bash
+launchctl bootout gui/$(id -u)/com.openclaw.sessionwatcher
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.openclaw.sessionwatcher.plist
+```
 
 ### Frontend
 
