@@ -25,6 +25,16 @@ from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qsl, urlencode
 
+# ── JSON helpers ─────────────────────────────────────────────────────────────
+
+_TRAILING_COMMA_RE = re.compile(r',\s*([}\]])')
+
+def json_loads_lenient(text: str):
+    """Parse JSON that may contain trailing commas (e.g. JSON5/JSONC style).
+    Strips trailing commas before handing off to the standard parser."""
+    cleaned = _TRAILING_COMMA_RE.sub(r'\1', text)
+    return json.loads(cleaned)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 OPENCLAW_DIR = Path(os.environ.get("OPENCLAW_DIR", Path.home() / ".openclaw"))
 AGENTS_DIR   = OPENCLAW_DIR / "agents"
@@ -355,7 +365,7 @@ def load_cron_name_map() -> dict[str, str]:
 
     openclaw_path = OPENCLAW_DIR / "openclaw.json"
     try:
-        data = json.loads(openclaw_path.read_text(encoding="utf-8"))
+        data = json_loads_lenient(openclaw_path.read_text(encoding="utf-8"))
         cron_cfg = data.get("cron") if isinstance(data, dict) else None
         for job in _iter_job_dicts(cron_cfg):
             jid = str(job.get("id", "")).strip()
@@ -384,7 +394,7 @@ def load_cron_sessionkey_map() -> dict[str, str]:
 
     openclaw_path = OPENCLAW_DIR / "openclaw.json"
     try:
-        data = json.loads(openclaw_path.read_text(encoding="utf-8"))
+        data = json_loads_lenient(openclaw_path.read_text(encoding="utf-8"))
         cron_cfg = data.get("cron") if isinstance(data, dict) else None
         for job in _iter_job_dicts(cron_cfg):
             jid = str(job.get("id", "")).strip()
@@ -405,7 +415,7 @@ def load_gateway_config() -> dict:
         return {"available": False, "error": "openclaw.json not found"}
     
     try:
-        data = json.loads(openclaw_path.read_text(encoding="utf-8"))
+        data = json_loads_lenient(openclaw_path.read_text(encoding="utf-8"))
         gateway_cfg = data.get("gateway", {})
         
         token = gateway_cfg.get("auth", {}).get("token", "")
