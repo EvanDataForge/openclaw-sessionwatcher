@@ -1290,6 +1290,7 @@ const State = {
   sessions: [],
   filter: 'all',
   selectedId: null,
+  selectedAnchor: null,
   detailSessionId: null,   // session currently shown in detail
   lastMsgCount: 0,         // msg count on last render
   lastRefresh: null,
@@ -1407,7 +1408,7 @@ const ChatInput = {
     if (!text || State.gatewaySending) return;
     
     // Get current session
-    const currentSession = State.sessions.find(s => s.session_id === State.detailSessionId);
+    const currentSession = App._resolveSelectedSession(State.detailSessionId);
     if (!currentSession) {
       this.showStatus('No session selected', false);
       return;
@@ -1446,7 +1447,8 @@ const ChatInput = {
         
         // Reload messages after short delay
         setTimeout(() => {
-          if (State.detailSessionId === currentSession.session_id) {
+          const activeSession = App._resolveSelectedSession(State.detailSessionId);
+          if (activeSession && activeSession.session_id === currentSession.session_id) {
             App.refresh(true);
           }
         }, 500);
@@ -1741,6 +1743,20 @@ function getSessionActivityMs(s) {
   return s?.updated_at || 0;
 }
 
+function getSessionAnchor(session) {
+  if (!session || typeof session !== 'object') return '';
+  const agent = String(session.agent || '').trim();
+  const logicalKey = String(session.key || session.session_key || '').trim();
+  if (!logicalKey) return '';
+  return [agent, logicalKey].join('::');
+}
+
+function findSessionByAnchor(anchor) {
+  const wanted = String(anchor || '').trim();
+  if (!wanted) return null;
+  return State.sessions.find(session => getSessionAnchor(session) === wanted) || null;
+}
+
 function isRecent(s) {
   // updated in last 10 minutes
   const nowMs = Date.now();
@@ -1823,10 +1839,21 @@ function buildEntryTransitions(messages, prevSignatures = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 function renderSessionList() {
   const list = document.getElementById('session-list');
+  const selectedSession = State.selectedId
+    ? State.sessions.find(s => s.session_id === State.selectedId) || findSessionByAnchor(State.selectedAnchor)
+    : findSessionByAnchor(State.selectedAnchor);
+
   const filtered = (State.filter === 'all'
     ? State.sessions
     : State.sessions.filter(s => s.type === State.filter)
-  ).filter(s => (s.msg_count || 0) > 0);
+  ).filter(s => {
+    if ((s.msg_count || 0) > 0) return true;
+    return !!(selectedSession && s.session_id === selectedSession.session_id);
+  });
+
+  if (selectedSession && !filtered.some(s => s.session_id === selectedSession.session_id)) {
+    filtered.unshift(selectedSession);
+  }
 
   if (!filtered.length) {
     list.innerHTML = `<div class="empty" style="height:200px">
@@ -2260,6 +2287,23 @@ const App = {
     return session;
   },
 
+  _resolveSelectedSession(preferredId = State.selectedId) {
+    if (preferredId) {
+      const exact = State.sessions.find(session => session.session_id === preferredId);
+      if (exact) return exact;
+    }
+    if (State.selectedAnchor) {
+      return findSessionByAnchor(State.selectedAnchor);
+    }
+    return null;
+  },
+
+  _trackSelectedSession(session) {
+    if (!session) return;
+    State.selectedId = session.session_id;
+    State.selectedAnchor = getSessionAnchor(session);
+  },
+
   async init() {
     Theme.init();
     Scroll.init();
@@ -2334,6 +2378,17 @@ const App = {
       State.authError = null;
       State.sessions   = data.sessions || [];
       State.lastRefresh = data.generated_fmt || '';
+      const previousSelectedId = State.selectedId;
+      const trackedSession = this._resolveSelectedSession(previousSelectedId);
+      const followedReplacement = !!(
+        trackedSession
+        && previousSelectedId
+        && trackedSession.session_id !== previousSelectedId
+      );
+
+      if (trackedSession) {
+        this._trackSelectedSession(trackedSession);
+      }
 
       // Detect new messages in non-selected sessions (skip on first load)
       if (!firstLoad) {
@@ -2353,14 +2408,29 @@ const App = {
       renderSessionList();
 
       // If a session was selected, refresh its messages too
-      if (State.selectedId) {
-        const still = State.sessions.find(s => s.session_id === State.selectedId);
-        if (
-          still
-          && !State.detailStreamConnected
+      if (trackedSession) {
+        const detailIsTrackedSession = State.detailSessionId === trackedSession.session_id;
+        const detailMsgCount = detailIsTrackedSession ? (State.lastMsgCount || 0) : -1;
+        const listMsgCount = trackedSession.msg_count || 0;
+        const detailBehindList = detailIsTrackedSession && listMsgCount > detailMsgCount;
+
+        if (followedReplacement) {
+          this._closeDetailStream();
+          this._stopDetailFallback();
+          await this._loadDetail(trackedSession, false, 'rollover');
+          this._openDetailStream(trackedSession.session_id);
+          if (State.gatewayAvailable) {
+            ChatInput.show();
+            ChatInput.showStatus('Session log rotated. Following the newest session ID.', true);
+          }
+        } else if (detailBehindList) {
+          // Safety sync: list metadata can advance before the detail SSE event arrives.
+          await this._loadDetail(trackedSession, true, 'refresh-sync');
+        } else if (
+          !State.detailStreamConnected
           && !State.detailFallbackTimer
         ) {
-          await this._loadDetail(still, true, 'refresh');
+          await this._loadDetail(trackedSession, true, 'refresh');
         }
       }
 
@@ -2413,7 +2483,10 @@ const App = {
     this._closeDetailStream();
     this._stopDetailFallback();
 
-    State.selectedId = sessionId;
+    const s = State.sessions.find(x => x.session_id === sessionId);
+    if (!s) return;
+
+    this._trackSelectedSession(s);
     State.unread.delete(sessionId);
     // Update selected/unread highlight
     document.querySelectorAll('.session-card').forEach(el => {
@@ -2423,9 +2496,6 @@ const App = {
     // Remove unread dot from card if present
     const card = document.querySelector(`.session-card[data-id="${sessionId}"]`);
     if (card) card.querySelector('.unread-dot')?.remove();
-
-    const s = State.sessions.find(x => x.session_id === sessionId);
-    if (!s) return;
 
     await this._loadDetail(s, false, 'select');
     this._openDetailStream(sessionId);
@@ -2603,11 +2673,18 @@ const App = {
       State.detailSessionId = s.session_id;
       State.lastMsgCount    = newCount;
       State.detailEntrySignatures = nextSignatures;
+      this._trackSelectedSession(s);
 
       // Update last activity time in header
       const now = new Date();
       const timeStr = now.toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
-      const icon = source === 'refresh' ? ' ↻' : (source === 'sse' || source === 'fallback') ? ' •' : '';
+      const icon = source.startsWith('refresh')
+        ? ' ↻'
+        : source === 'rollover'
+          ? ' ⇢'
+          : (source === 'sse' || source === 'fallback')
+            ? ' •'
+            : '';
       document.getElementById('hdr-time').textContent = timeStr + icon;
 
       renderMessages(msgs, renderTransitions);

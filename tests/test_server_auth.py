@@ -310,6 +310,103 @@ class TestLoopbackWithoutToken(ServerProcessMixin, unittest.TestCase):
         self.assertIsNotNone(subagent_session)
         self.assertEqual(subagent_session["model"], "—")
 
+    def test_subagent_prefers_explicit_label_over_heartbeat_origin(self):
+        root = Path(self.tempdir.name)
+        sessions_dir = root / "agents" / "main" / "sessions"
+        sessions_file = sessions_dir / "sessions.json"
+        sessions = json.loads(sessions_file.read_text(encoding="utf-8"))
+
+        sessions["agent:main:subagent:test-heartbeat"] = {
+            "sessionId": "sess-subagent-heartbeat",
+            "updatedAt": int(time.time() * 1000),
+            "lastChannel": "webchat",
+            "label": "bugfix-task-watchdog",
+            "model": "gpt-5.4",
+            "contextPct": 0,
+            "origin": {
+                "label": "heartbeat",
+                "provider": "heartbeat",
+                "from": "heartbeat",
+                "to": "heartbeat",
+            },
+        }
+        sessions_file.write_text(json.dumps(sessions), encoding="utf-8")
+
+        subagent_entries = [
+            {
+                "id": "subagent-entry-1",
+                "timestamp": "2026-03-11T10:52:34Z",
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Task complete"}],
+                    "model": "gpt-5.4",
+                    "stopReason": "stop",
+                    "usage": {"input": 1, "output": 1, "cost": {"total": 0}},
+                },
+            }
+        ]
+        with (sessions_dir / "sess-subagent-heartbeat.jsonl").open("w", encoding="utf-8") as handle:
+            for entry in subagent_entries:
+                handle.write(json.dumps(entry) + "\n")
+
+        status, _headers, body = self.request("/api/sessions")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+
+        subagent_session = next((s for s in data["sessions"] if s["session_id"] == "sess-subagent-heartbeat"), None)
+        self.assertIsNotNone(subagent_session)
+        self.assertEqual(subagent_session["type"], "subagent")
+        self.assertEqual(subagent_session["label"], "bugfix-task-watchdog")
+
+    def test_sessions_summary_msg_count_matches_detail_message_count(self):
+        root = Path(self.tempdir.name)
+        sessions_dir = root / "agents" / "main" / "sessions"
+
+        entries = []
+        for idx in range(76):
+            entries.append(
+                {
+                    "id": f"user-{idx}",
+                    "timestamp": f"2026-03-11T09:{idx // 60:02d}:{idx % 60:02d}Z",
+                    "type": "message",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": f"Msg {idx}"}],
+                        "usage": {"input": 0, "output": 0, "cost": {"total": 0}},
+                    },
+                }
+            )
+
+        for idx in range(136):
+            entries.append(
+                {
+                    "id": f"evt-{idx}",
+                    "timestamp": f"2026-03-11T10:{idx // 60:02d}:{idx % 60:02d}Z",
+                    "type": "custom",
+                    "customType": "test:event",
+                    "data": {"index": idx},
+                }
+            )
+
+        with (sessions_dir / "sess-1.jsonl").open("w", encoding="utf-8") as handle:
+            for entry in entries:
+                handle.write(json.dumps(entry) + "\n")
+
+        status_sessions, _headers_sessions, body_sessions = self.request("/api/sessions")
+        self.assertEqual(status_sessions, 200)
+        sessions_data = json.loads(body_sessions)
+        listed = next((s for s in sessions_data["sessions"] if s["session_id"] == "sess-1"), None)
+        self.assertIsNotNone(listed)
+
+        status_messages, _headers_messages, body_messages = self.request("/api/sessions/sess-1/messages")
+        self.assertEqual(status_messages, 200)
+        messages_data = json.loads(body_messages)
+        real_message_count = sum(1 for m in messages_data["messages"] if m["role"] != "event")
+
+        self.assertEqual(listed["msg_count"], 76)
+        self.assertEqual(listed["msg_count"], real_message_count)
+
 
 class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
     TOKEN = "test-sessionwatcher-token"

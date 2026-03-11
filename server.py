@@ -512,6 +512,141 @@ def ensure_server_gateway_client(
 
         return None
 
+
+def rebuild_server_gateway_client(server_obj):
+    """Disconnect and replace the shared gateway client instance."""
+    lock = getattr(server_obj, "gateway_client_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        server_obj.gateway_client_lock = lock
+
+    with lock:
+        client = getattr(server_obj, "gateway_client", None)
+        if client is not None:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+
+        fresh_client = create_gateway_client_from_runtime()
+        server_obj.gateway_client = fresh_client
+        return fresh_client
+
+
+def gateway_response_error(response: dict | None) -> str:
+    """Return a normalized error string from a gateway response dict."""
+    if not isinstance(response, dict):
+        return str(response or "").strip()
+    return str(response.get("error", "") or "").strip()
+
+
+def gateway_chat_unavailable_reason() -> str:
+    """Return a human-readable reason when chat transport cannot run at all."""
+    if websocket is None:
+        return (
+            "SessionWatcher chat backend unavailable: websocket-client is not "
+            "installed in the server Python runtime"
+        )
+
+    gateway_config = load_gateway_config()
+    if not gateway_config.get("available"):
+        return f"Gateway unavailable: {gateway_config.get('error', 'unknown error')}"
+
+    return ""
+
+
+def is_retryable_gateway_response(response: dict | None) -> bool:
+    """Detect transport-level gateway failures that merit reconnect+retry."""
+    if not isinstance(response, dict):
+        return False
+    if response.get("ok"):
+        return False
+
+    err = gateway_response_error(response).casefold()
+    if not err:
+        return False
+
+    retryable_snippets = (
+        "not connected",
+        "transport unavailable",
+        "gateway timeout",
+        "timed out",
+        "connection reset",
+        "connection refused",
+        "broken pipe",
+        "socket",
+        "closed",
+        "handshake",
+        "network is unreachable",
+        "temporarily unavailable",
+        "refused",
+        "reset by peer",
+    )
+    return any(snippet in err for snippet in retryable_snippets)
+
+
+def send_chat_with_recovery(
+    server_obj,
+    session_key: str,
+    message: str,
+    *,
+    timeout_ms: int = 180000,
+    idempotency_key: str | None = None,
+    connection_attempts: int = 2,
+    connection_wait_s: float = 0.8,
+    connection_retry_delay_s: float = 1.0,
+    send_attempts: int = 3,
+    send_retry_delays_s: tuple[float, ...] = (0.75, 1.5),
+) -> dict:
+    """Send chat with bounded reconnect/rebuild retries before failing."""
+    preflight_error = gateway_chat_unavailable_reason()
+    if preflight_error:
+        return {"ok": False, "error": preflight_error}
+
+    stable_idempotency_key = str(idempotency_key or "").strip() or str(uuid.uuid4())
+    attempts = max(1, int(send_attempts or 1))
+    retry_delays = tuple(max(0.0, float(delay)) for delay in (send_retry_delays_s or ()))
+    last_response: dict = {"ok": False, "error": "Gateway not connected"}
+
+    for attempt in range(1, attempts + 1):
+        client = ensure_server_gateway_client(
+            server_obj,
+            max_attempts=connection_attempts,
+            wait_per_attempt_s=connection_wait_s,
+            retry_delay_s=connection_retry_delay_s,
+        )
+        if client is None:
+            last_response = {"ok": False, "error": "Gateway not connected"}
+        else:
+            response = client.send_chat(
+                session_key,
+                message,
+                timeout_ms=timeout_ms,
+                idempotency_key=stable_idempotency_key,
+            )
+            last_response = response if isinstance(response, dict) else {
+                "ok": False,
+                "error": str(response),
+            }
+            if last_response.get("ok"):
+                return last_response
+            if not is_retryable_gateway_response(last_response):
+                return last_response
+
+        if attempt >= attempts:
+            break
+
+        delay_s = retry_delays[min(attempt - 1, len(retry_delays) - 1)] if retry_delays else 0.0
+        print(
+            f"Gateway send attempt {attempt}/{attempts} failed "
+            f"({gateway_response_error(last_response) or 'unknown error'}); rebuilding client"
+        )
+        rebuild_server_gateway_client(server_obj)
+        if delay_s > 0:
+            time.sleep(delay_s)
+
+    return last_response
+
 def tail_jsonl(path: Path, n: int = 200) -> list[dict]:
     """Read last n lines from a JSONL file (handles large files efficiently)."""
     if not path.exists():
@@ -554,6 +689,13 @@ def read_jsonl_full(path: Path) -> list[dict]:
     except Exception:
         pass
     return result
+
+def load_session_messages_from_paths(jsonl_paths: list[Path]) -> list[dict]:
+    """Read and merge all JSONL aliases for one logical session."""
+    merged_entries: list[dict] = []
+    for jsonl_path in jsonl_paths:
+        merged_entries.extend(read_jsonl_full(jsonl_path))
+    return parse_messages(_merge_session_entries(merged_entries))
 
 def _tool_result_preview(content) -> tuple[str, str, int]:
     """Return (preview_text, full_text, total_chars) from toolResult content."""
@@ -1161,10 +1303,7 @@ def load_all_sessions() -> list[dict]:
             last_stop_reason = ""
 
             if has_file:
-                merged_tail_entries: list[dict] = []
-                for jsonl_path in jsonl_paths:
-                    merged_tail_entries.extend(tail_jsonl(jsonl_path, 200))
-                msgs = parse_messages(_merge_session_entries(merged_tail_entries))
+                msgs = load_session_messages_from_paths(jsonl_paths)
                 real_msgs    = [m for m in msgs if m["role"] != "event"]
                 msg_count    = len(real_msgs)
                 total_input  = sum(m.get("input_tok", 0) for m in real_msgs)
@@ -1198,6 +1337,7 @@ def load_all_sessions() -> list[dict]:
             # Session label — prefer human-readable names from metadata
             origin = val.get("origin") or {}
             origin_label = origin.get("label", "").strip()
+            explicit_label = str(val.get("label") or "").strip()
             parts = key.split(":")
 
             cron_id = ""
@@ -1219,6 +1359,8 @@ def load_all_sessions() -> list[dict]:
                 label = origin_label or f"DM {parts[-1]}" if parts else key
             elif stype == "cron":
                 label = cron_name_map.get(cron_id, "") or origin_label or key
+            elif stype == "subagent":
+                label = explicit_label or origin_label or (parts[-1] if parts else key)
             elif stype == "main":
                 if val.get("lastChannel") == "webchat" or (val.get("origin") or {}).get("provider") == "webchat":
                     label = "Direct / Webchat"
@@ -1376,6 +1518,7 @@ class GatewayClient:
         if self.thread:
             self.thread.join(timeout=2)
         self.connected = False
+        self.nonce = None
     
     def _run(self):
         """WebSocket thread main loop with automatic reconnect."""
@@ -1440,11 +1583,13 @@ class GatewayClient:
     def _on_error(self, ws, error):
         """WebSocket error."""
         self.connected = False
+        self.nonce = None
         print(f"Gateway WebSocket error: {error}")
     
     def _on_close(self, ws, close_status_code, close_msg):
         """WebSocket closed."""
         self.connected = False
+        self.nonce = None
         print(f"Gateway WebSocket closed: {close_status_code} {close_msg}")
     
     def _send_connect(self):
@@ -1531,8 +1676,10 @@ class GatewayClient:
                 response = response_queue.get(timeout=5.0)
                 return response
             except queue.Empty:
+                self.connected = False
                 return {"ok": False, "error": "Gateway timeout"}
         except Exception as e:
+            self.connected = False
             return {"ok": False, "error": str(e)}
         finally:
             with self.lock:
@@ -1882,16 +2029,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not session_key or not message:
                     self.send_json({"ok": False, "error": "Missing sessionKey or message"}, 400)
                     return
-                
-                gateway_client = ensure_server_gateway_client(
-                    self.server,
-                    max_attempts=3,
-                    wait_per_attempt_s=1.5,
-                    retry_delay_s=2.0,
-                )
-                if not gateway_client:
-                    self.send_json({"ok": False, "error": "Gateway not connected"}, 503)
-                    return
+
+                request_idempotency_key = idempotency_key or str(uuid.uuid4())
 
                 # Best-effort duplicate protection for accidental double submits.
                 # If same session+message arrives within 2s, return cached ACK.
@@ -1912,11 +2051,11 @@ class Handler(BaseHTTPRequestHandler):
                             self.send_json(cached_result)
                             return
                 
-                # Send message via gateway
-                response = gateway_client.send_chat(
+                response = send_chat_with_recovery(
+                    self.server,
                     session_key,
                     message,
-                    idempotency_key=idempotency_key,
+                    idempotency_key=request_idempotency_key,
                 )
                 
                 if response.get("ok"):
@@ -1932,8 +2071,8 @@ class Handler(BaseHTTPRequestHandler):
                         }
                     self.send_json(result)
                 else:
-                    err_msg = str(response.get("error", "Unknown error"))
-                    err_status = 503 if "not connected" in err_msg.lower() else 500
+                    err_msg = gateway_response_error(response) or "Unknown error"
+                    err_status = 503 if is_retryable_gateway_response(response) else 500
                     self.send_json({
                         "ok": False,
                         "error": err_msg

@@ -19,7 +19,14 @@ ACCESS_TOKEN="${SESSIONWATCHER_ACCESS_TOKEN:-}"
 OPENCLAW_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}"
 LOG="$DIR/logs/server.log"
 
-PYTHON_BIN="${SESSIONWATCHER_PYTHON:-$(command -v python3)}"
+DEFAULT_VENV_PYTHON="$DIR/../.venv/bin/python"
+if [ -x "$DEFAULT_VENV_PYTHON" ]; then
+  DEFAULT_PYTHON_BIN="$DEFAULT_VENV_PYTHON"
+else
+  DEFAULT_PYTHON_BIN="$(command -v python3)"
+fi
+
+PYTHON_BIN="${SESSIONWATCHER_PYTHON:-$DEFAULT_PYTHON_BIN}"
 if [ ! -x "$PYTHON_BIN" ]; then
   echo "Error: Python not found or not executable: $PYTHON_BIN"
   exit 1
