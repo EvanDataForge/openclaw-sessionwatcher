@@ -268,6 +268,48 @@ class TestLoopbackWithoutToken(ServerProcessMixin, unittest.TestCase):
         self.assertEqual(cron_session["label_sub"], cron_id)
         self.assertEqual(cron_session["session_key"], "agent:main:telegram:direct:6824095908")
 
+    def test_delivery_mirror_is_not_used_as_session_model(self):
+        root = Path(self.tempdir.name)
+        sessions_dir = root / "agents" / "main" / "sessions"
+        sessions_file = sessions_dir / "sessions.json"
+        sessions = json.loads(sessions_file.read_text(encoding="utf-8"))
+
+        sessions["agent:main:subagent:test"] = {
+            "sessionId": "sess-subagent-1",
+            "updatedAt": int(time.time() * 1000),
+            "lastChannel": "subagent",
+            "model": "delivery-mirror",
+            "contextPct": 0,
+            "origin": {"label": "Subagent test"},
+        }
+        sessions_file.write_text(json.dumps(sessions), encoding="utf-8")
+
+        subagent_entries = [
+            {
+                "id": "subagent-entry-1",
+                "timestamp": "2026-03-11T09:10:00Z",
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Mirrored delivery"}],
+                    "model": "delivery-mirror",
+                    "stopReason": "stop",
+                    "usage": {"input": 1, "output": 1, "cost": {"total": 0}},
+                },
+            }
+        ]
+        with (sessions_dir / "sess-subagent-1.jsonl").open("w", encoding="utf-8") as handle:
+            for entry in subagent_entries:
+                handle.write(json.dumps(entry) + "\n")
+
+        status, _headers, body = self.request("/api/sessions")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+
+        subagent_session = next((s for s in data["sessions"] if s["session_id"] == "sess-subagent-1"), None)
+        self.assertIsNotNone(subagent_session)
+        self.assertEqual(subagent_session["model"], "—")
+
 
 class TestProtectedMode(ServerProcessMixin, unittest.TestCase):
     TOKEN = "test-sessionwatcher-token"

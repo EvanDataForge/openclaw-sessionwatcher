@@ -211,9 +211,25 @@ def time_ago(ms: int) -> str:
         return f"{int(diff/3600)}h ago"
     return f"{int(diff/86400)}d ago"
 
+_NON_MODEL_VALUES = {
+    "-",
+    "—",
+    "unknown",
+    "delivery-mirror",
+}
+
+
+def is_display_model(raw: str) -> bool:
+    value = str(raw or "").strip()
+    if not value:
+        return False
+    return value.casefold() not in _NON_MODEL_VALUES
+
+
 def friendly_model(raw: str) -> str:
-    if not raw:
+    if not is_display_model(raw):
         return "—"
+    raw = str(raw).strip()
     # strip provider prefixes
     for prefix in ("openai-completions/", "anthropic/", "openrouter/", "openai/"):
         if raw.startswith(prefix):

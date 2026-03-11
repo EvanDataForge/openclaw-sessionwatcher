@@ -61,6 +61,33 @@ class ParseMessagesErrorFallbackTests(unittest.TestCase):
         self.assertIn("model snapshot", msg["text"])
         self.assertIn("nvidia/z-ai/glm4.7", msg["text"])
 
+    def test_delivery_mirror_is_not_exposed_as_model(self):
+        entries = [
+            {
+                "type": "message",
+                "id": "assist-1",
+                "timestamp": "2026-03-11T09:10:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Mirrored delivery"}],
+                    "model": "delivery-mirror",
+                    "stopReason": "stop",
+                    "usage": {"input": 3, "output": 4, "cost": {"total": 0}},
+                },
+            }
+        ]
+
+        parsed = server.parse_messages(entries)
+
+        self.assertEqual(len(parsed), 1)
+        msg = parsed[0]
+        self.assertEqual(msg["role"], "assistant")
+        self.assertEqual(msg["model"], "—")
+
+    def test_friendly_model_rejects_delivery_mirror_marker(self):
+        self.assertEqual(server.friendly_model("delivery-mirror"), "—")
+        self.assertEqual(server.friendly_model(" anthropic/claude-sonnet-4 "), "claude-sonnet-4")
+
     def test_unknown_custom_is_mapped_to_custom_event(self):
         entries = [
             {
