@@ -70,13 +70,17 @@ Dark mode is the default. An optional light mode is available for brighter envir
 - Improved assistant error visibility when assistant content is empty
 - Switched UI activity age to last visible JSONL entry timestamp before metadata fallback
 
-## Recent Runtime Hardening (post v1.2)
+## Release 1.3 Highlights
 
 - Added lenient `openclaw.json` parsing for gateway/cron config reads, so trailing commas no longer break Session Watcher startup/runtime reads.
 - Added alias-aware session JSONL resolution and merge logic for metadata drift cases (`sessionId` points to a new file while `sessionFile` still points to an older file).
 - Updated session list loading, session detail loading, SSE change detection, and full-entry lookup to use the same merged multi-path resolver.
 - Improved `show all` failure feedback in the UI by surfacing backend error text instead of a generic `(error)` label.
 - Added explicit message provenance fields from backend parsing (`provenance_kind`, `provenance_source_session_key`, `provenance_source_channel`, `provenance_source_tool`) for robust frontend rendering decisions.
+- Filtered delivery-mirror traffic from model-label rendering to reduce noisy model switches in the timeline.
+- Hardened session rollover and gateway recovery paths to keep live updates stable across transport/file churn.
+- Improved Telegram group label extraction from metadata for cleaner, more reliable session list naming.
+- Simplified startup and LaunchAgent install flow in `start.sh` / `launchctl.sh` for more predictable local operation.
 - Added dedicated Inter-session rendering path in the UI:
   - stays right-aligned (input side) but uses a non-bubble card style
   - shows source session/channel/tool metadata in-header
