@@ -1,6 +1,5 @@
 #!/bin/bash
-# Start the OpenClaw Session Watcher dashboard
-set -e
+set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -17,91 +16,277 @@ done
 PORT="${SESSIONWATCHER_PORT:-8090}"
 BIND="${SESSIONWATCHER_BIND:-127.0.0.1}"
 ACCESS_TOKEN="${SESSIONWATCHER_ACCESS_TOKEN:-}"
+OPENCLAW_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}"
 LOG="$DIR/logs/server.log"
-PYTHON_BIN_DEFAULT="$DIR/../.venv/bin/python"
-PYTHON_BIN="${SESSIONWATCHER_PYTHON:-$PYTHON_BIN_DEFAULT}"
 
-mkdir -p "$DIR/logs"
-
+PYTHON_BIN="${SESSIONWATCHER_PYTHON:-$(command -v python3)}"
 if [ ! -x "$PYTHON_BIN" ]; then
-  PYTHON_BIN="$(command -v python3)"
-fi
-
-LAUNCH_LABEL="com.openclaw.sessionwatcher"
-LAUNCH_TARGET="gui/$(id -u)/$LAUNCH_LABEL"
-
-if [ "${SESSIONWATCHER_IGNORE_LAUNCHCTL:-0}" != "1" ] && launchctl print "$LAUNCH_TARGET" >/dev/null 2>&1; then
-  echo "LaunchAgent detected ($LAUNCH_LABEL); delegating start to launchctl..."
-  launchctl kickstart -k "$LAUNCH_TARGET" >/dev/null 2>&1 || true
-
-  for _ in {1..20}; do
-    LISTENER=$(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
-    if [ -n "$LISTENER" ]; then
-      break
-    fi
-    sleep 0.25
-  done
-
-  if [ -n "$LISTENER" ]; then
-    echo "✓ Running   → http://$BIND:$PORT"
-    if [ -n "$ACCESS_TOKEN" ]; then
-      echo "  Login URL  → http://$BIND:$PORT/?access_token=<your-token>"
-    fi
-    echo "  Logs      → $LOG"
-    echo "  Managed by launchctl. Control: $DIR/launchctl.sh {start|stop|restart|status|logs}"
-    exit 0
-  fi
-
-  echo "✗ LaunchAgent is loaded, but no listener appeared on port $PORT."
-  echo "  Check launchctl logs: $DIR/launchctl.sh logs"
+  echo "Error: Python not found or not executable: $PYTHON_BIN"
   exit 1
 fi
 
-# Kill any existing listener on the target port.
-# Use LISTEN-only lookup so we do not accidentally match client connections.
-EXISTING=$(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
-if [ -n "$EXISTING" ]; then
-  echo "Stopping existing listener(s) on port $PORT..."
+LABEL="com.openclaw.sessionwatcher"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+DOMAIN="gui/$(id -u)"
+TARGET="${DOMAIN}/${LABEL}"
+
+listener_pids() {
+  lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true
+}
+
+is_running() {
+  [ -n "$(listener_pids)" ]
+}
+
+is_loaded() {
+  launchctl print "$TARGET" >/dev/null 2>&1
+}
+
+wait_for_listener() {
+  for _ in {1..20}; do
+    if is_running; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+print_usage() {
+  echo "Usage: $0 [start|stop|restart|install|uninstall]"
+}
+
+print_running_hint() {
+  echo "An instance is already running on port $PORT."
+  echo "Available commands: start (default), stop, restart, install, uninstall"
+  echo "Example: $0 restart"
+}
+
+start_manual() {
+  mkdir -p "$DIR/logs"
+  echo "Starting Session Watcher manually on http://$BIND:$PORT ..."
+
+  local cmd=("$PYTHON_BIN" "$DIR/server.py" "--port" "$PORT" "--bind" "$BIND")
+  if [ -n "$ACCESS_TOKEN" ]; then
+    cmd+=("--access-token" "$ACCESS_TOKEN")
+    echo "Access-token protection is enabled."
+  fi
+
+  nohup "${cmd[@]}" >> "$LOG" 2>&1 &
+  echo "$!" > "$DIR/server.pid"
+
+  if wait_for_listener; then
+    echo "Start successful: http://$BIND:$PORT"
+    echo "Logs: $LOG"
+  else
+    echo "Start failed. See logs: $LOG"
+    exit 1
+  fi
+}
+
+start_via_launchctl() {
+  if is_loaded; then
+    echo "LaunchAgent is loaded. Starting via launchctl kickstart ..."
+    launchctl kickstart -k "$TARGET" >/dev/null 2>&1 || true
+  elif [ -f "$PLIST" ]; then
+    echo "LaunchAgent plist found. Loading and starting via launchctl ..."
+    launchctl bootstrap "$DOMAIN" "$PLIST"
+    launchctl kickstart -k "$TARGET" >/dev/null 2>&1 || true
+  else
+    start_manual
+    return
+  fi
+
+  if wait_for_listener; then
+    echo "Start successful (launchctl): http://$BIND:$PORT"
+  else
+    echo "Launchctl started, but no listener was found on port $PORT."
+    exit 1
+  fi
+}
+
+stop_processes_on_port() {
+  local pids
+  pids="$(listener_pids)"
+  if [ -z "$pids" ]; then
+    return 0
+  fi
+
+  echo "Stopping processes on port $PORT ..."
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || true
-  done <<< "$EXISTING"
+  done <<< "$pids"
 
-  # Wait briefly until all listeners release the port.
-  for _ in {1..20}; do
-    REMAINING=$(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
-    if [ -z "$REMAINING" ]; then
-      break
-    fi
-    sleep 0.25
-  done
+  sleep 1
+  pids="$(listener_pids)"
+  if [ -n "$pids" ]; then
+    echo "Processes did not exit on TERM, sending KILL ..."
+    while IFS= read -r pid; do
+      [ -n "$pid" ] || continue
+      kill -9 "$pid" 2>/dev/null || true
+    done <<< "$pids"
+    sleep 1
+  fi
+}
 
-  if [ -n "$REMAINING" ]; then
-    REMAINING_PIDS=$(echo "$REMAINING" | tr '\n' ' ')
-    echo "✗ Port $PORT is still in use by PID(s): $REMAINING_PIDS"
-    echo "  Hint: if launchctl auto-restart is enabled, run: $DIR/launchctl.sh stop"
+do_start() {
+  if is_running; then
+    print_running_hint
+    return 0
+  fi
+
+  if is_loaded || [ -f "$PLIST" ]; then
+    start_via_launchctl
+  else
+    start_manual
+  fi
+}
+
+do_stop() {
+  local had_any=0
+
+  if is_loaded; then
+    echo "Stopping LaunchAgent via launchctl bootout ..."
+    launchctl bootout "$TARGET" >/dev/null 2>&1 || true
+    had_any=1
+  fi
+
+  if is_running; then
+    had_any=1
+    stop_processes_on_port
+  fi
+
+  if is_running; then
+    echo "Error: Port $PORT is still in use."
     exit 1
   fi
-fi
 
-echo "Starting OpenClaw Session Watcher on http://$BIND:$PORT"
-if [ -n "$ACCESS_TOKEN" ]; then
-  echo "Access protection: enabled"
-fi
-nohup "$PYTHON_BIN" "$DIR/server.py" --port "$PORT" --bind "$BIND" >> "$LOG" 2>&1 &
-PID=$!
-echo "PID: $PID"
-echo "$PID" > "$DIR/server.pid"
-sleep 1
-
-if kill -0 "$PID" 2>/dev/null; then
-  echo "✓ Running   → http://$BIND:$PORT"
-  if [ -n "$ACCESS_TOKEN" ]; then
-    echo "  Login URL  → http://$BIND:$PORT/?access_token=<your-token>"
+  if [ "$had_any" -eq 1 ]; then
+    echo "Session Watcher is stopped."
+  else
+    echo "No instance is running on port $PORT."
   fi
-  echo "  Logs      → $LOG"
-  echo "  Stop:        kill \$(cat $DIR/server.pid)"
-else
-  echo "✗ Failed to start. Check logs: $LOG"
-  exit 1
+}
+
+do_restart() {
+  if is_running; then
+    echo "Instance found, performing stop + start ..."
+  else
+    echo "No running instance found, starting directly ..."
+  fi
+  do_stop
+  do_start
+}
+
+do_install() {
+  mkdir -p "$HOME/Library/LaunchAgents" "$DIR/logs"
+  touch "$DIR/logs/launchd.log"
+
+  echo "Installing LaunchAgent at $PLIST ..."
+  cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$PYTHON_BIN</string>
+    <string>$DIR/server.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$DIR</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/openclaw/.homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>OPENCLAW_DIR</key>
+    <string>$OPENCLAW_DIR</string>
+    <key>SESSIONWATCHER_BIND</key>
+    <string>$BIND</string>
+    <key>SESSIONWATCHER_PORT</key>
+    <string>$PORT</string>
+    <key>SESSIONWATCHER_ACCESS_TOKEN</key>
+    <string>$ACCESS_TOKEN</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$DIR/logs/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>$DIR/logs/launchd.log</string>
+</dict>
+</plist>
+EOF
+
+  if is_loaded; then
+    echo "LaunchAgent was already loaded, reloading ..."
+    launchctl bootout "$TARGET" >/dev/null 2>&1 || true
+  fi
+
+  launchctl bootstrap "$DOMAIN" "$PLIST"
+  launchctl kickstart -k "$TARGET" >/dev/null 2>&1 || true
+  echo "Install complete. Autostart via launchctl is active."
+
+  if wait_for_listener; then
+    echo "Instance is running: http://$BIND:$PORT"
+  else
+    echo "Note: LaunchAgent is installed, but no listener is currently active on port $PORT."
+  fi
+}
+
+do_uninstall() {
+  echo "Removing LaunchAgent autostart ..."
+  if is_loaded; then
+    launchctl bootout "$TARGET" >/dev/null 2>&1 || true
+    echo "LaunchAgent unloaded."
+  fi
+
+  if [ -f "$PLIST" ]; then
+    rm -f "$PLIST"
+    echo "Plist removed: $PLIST"
+  else
+    echo "No plist found: $PLIST"
+  fi
+
+  echo "Uninstall complete. Autostart via launchctl has been removed."
+}
+
+COMMAND="${1:-start}"
+
+if [ $# -eq 0 ]; then
+  echo "Available commands: start (default), stop, restart, install, uninstall"
+  echo ""
 fi
+
+case "$COMMAND" in
+  start)
+    do_start
+    ;;
+  stop)
+    do_stop
+    ;;
+  restart)
+    do_restart
+    ;;
+  install)
+    do_install
+    ;;
+  uninstall)
+    do_uninstall
+    ;;
+  -h|--help|help)
+    print_usage
+    ;;
+  *)
+    echo "Unknown command: $COMMAND"
+    print_usage
+    exit 1
+    ;;
+esac
