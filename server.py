@@ -930,6 +930,178 @@ def parse_messages(entries: list[dict]) -> list[dict]:
         })
     return _dedupe_retry_user_messages(msgs)
 
+def _dedupe_paths(paths: list[Path | None]) -> list[Path]:
+    """Return unique paths while preserving order."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not p:
+            continue
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+def _resolve_declared_session_file(agent_dir: Path, declared: str) -> Path | None:
+    """Resolve sessionFile value from sessions.json to an absolute path."""
+    raw = str(declared or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return agent_dir / "sessions" / path
+
+def _entry_merge_key(entry: dict) -> str:
+    """Build stable merge key for deduplicating entries across alias files."""
+    entry_id = str(entry.get("id", "") or "").strip()
+    if entry_id:
+        return f"id:{entry_id}"
+    # Fallback key when id is absent in malformed/legacy rows.
+    return json.dumps(
+        {
+            "type": entry.get("type", ""),
+            "timestamp": entry.get("timestamp", ""),
+            "parentId": entry.get("parentId", ""),
+            "message": entry.get("message", {}),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+def _merge_session_entries(entries: list[dict]) -> list[dict]:
+    """Merge and dedupe entries from multiple JSONL aliases by id/timestamp."""
+    if not entries:
+        return []
+
+    def sort_key(item: tuple[int, dict]) -> tuple[int, int, int]:
+        idx, entry = item
+        ts = _parse_iso_ms(str(entry.get("timestamp", "") or ""))
+        if ts:
+            return (0, ts, idx)
+        return (1, idx, idx)
+
+    merged: list[dict] = []
+    merged_index: dict[str, int] = {}
+
+    for _, entry in sorted(enumerate(entries), key=sort_key):
+        key = _entry_merge_key(entry)
+        existing_idx = merged_index.get(key)
+        if existing_idx is None:
+            merged_index[key] = len(merged)
+            merged.append(entry)
+            continue
+
+        # Keep the richer entry in case one alias contains additional fields.
+        existing = merged[existing_idx]
+        try:
+            existing_size = len(json.dumps(existing, ensure_ascii=False, sort_keys=True))
+            incoming_size = len(json.dumps(entry, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            existing_size = 0
+            incoming_size = 0
+        if incoming_size > existing_size:
+            merged[existing_idx] = entry
+
+    return merged
+
+def resolve_session_jsonl_paths(session_id: str) -> list[Path]:
+    """Resolve all JSONL files that can belong to one logical session.
+
+    A session can temporarily span aliases when sessions.json drifts
+    (sessionId points to new file while sessionFile still points to old file).
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return []
+
+    paths: list[Path | None] = []
+
+    for agent_dir in sorted(AGENTS_DIR.iterdir()):
+        if not agent_dir.is_dir():
+            continue
+
+        sess_dir = agent_dir / "sessions"
+        direct = sess_dir / f"{sid}.jsonl"
+        if direct.exists():
+            paths.append(direct)
+
+        store = load_sessions_store(agent_dir)
+        for _, val in store.items():
+            if not isinstance(val, dict):
+                continue
+
+            store_sid = str(val.get("sessionId", "") or "").strip()
+            declared = _resolve_declared_session_file(agent_dir, str(val.get("sessionFile", "") or ""))
+            declared_stem = declared.stem if declared else ""
+
+            if store_sid != sid and declared_stem != sid:
+                continue
+
+            sid_path = sess_dir / f"{store_sid}.jsonl" if store_sid else None
+            if sid_path and sid_path.exists():
+                paths.append(sid_path)
+            if declared and declared.exists():
+                paths.append(declared)
+
+    return _dedupe_paths(paths)
+
+def resolve_session_jsonl_path(session_id: str) -> Path | None:
+    """Resolve a primary JSONL file for a logical session."""
+    paths = resolve_session_jsonl_paths(session_id)
+    return paths[0] if paths else None
+
+def resolve_session_jsonl_paths_for_entry(session_id: str, entry_id: str = "") -> list[Path]:
+    """Resolve candidate JSONL paths, prioritizing files containing entry_id."""
+    paths = resolve_session_jsonl_paths(session_id)
+    eid = str(entry_id or "").strip()
+    if not eid or not paths:
+        return paths
+
+    containing: list[Path] = []
+    others: list[Path] = []
+
+    for path in paths:
+        found = False
+        for entry in tail_jsonl(path, 400):
+            if str(entry.get("id", "") or "") == eid:
+                found = True
+                break
+        if not found:
+            for entry in read_jsonl_full(path):
+                if str(entry.get("id", "") or "") == eid:
+                    found = True
+                    break
+        if found:
+            containing.append(path)
+        else:
+            others.append(path)
+
+    if containing:
+        return _dedupe_paths(containing + others)
+
+    # Slow fallback: entry may only exist in a stale alias not linked anymore.
+    for agent_dir in sorted(AGENTS_DIR.iterdir()):
+        if not agent_dir.is_dir():
+            continue
+        for candidate in sorted((agent_dir / "sessions").glob("*.jsonl")):
+            if candidate in paths:
+                continue
+            try:
+                for entry in tail_jsonl(candidate, 300):
+                    if str(entry.get("id", "") or "") == eid:
+                        paths.append(candidate)
+                        raise StopIteration
+            except StopIteration:
+                continue
+
+    return _dedupe_paths(paths)
+
 def load_all_sessions() -> list[dict]:
     """Scan all agents and return enriched session objects."""
     cutoff = now_ms() - ACTIVE_WINDOW_H * 3600 * 1000
@@ -951,16 +1123,18 @@ def load_all_sessions() -> list[dict]:
             if updated_at < cutoff:
                 continue  # too old
 
-            # Resolve JSONL file path: prefer explicit sessionFile, fallback to sessionId
-            session_file_declared = val.get("sessionFile", "")
-            if session_file_declared:
-                jsonl_path = Path(session_file_declared)
-                session_id = jsonl_path.stem  # extract session_id from filename
-            else:
-                session_id = val.get("sessionId", "")
-                jsonl_path = sess_dir / f"{session_id}.jsonl" if session_id else None
+            # Prefer session identity from sessionId; sessionFile is only a path hint.
+            session_file_declared = str(val.get("sessionFile", "") or "").strip()
+            session_id = str(val.get("sessionId", "") or "").strip()
+            if not session_id and session_file_declared:
+                session_id = Path(session_file_declared).stem
 
-            has_file = bool(jsonl_path and jsonl_path.exists())
+            jsonl_paths = resolve_session_jsonl_paths(session_id)
+            declared_path = _resolve_declared_session_file(agent_dir, session_file_declared)
+            if declared_path and declared_path.exists():
+                jsonl_paths = _dedupe_paths(jsonl_paths + [declared_path])
+
+            has_file = bool(jsonl_paths)
 
             # Count messages & get stats
             msg_count   = 0
@@ -971,8 +1145,10 @@ def load_all_sessions() -> list[dict]:
             last_stop_reason = ""
 
             if has_file:
-                tail = tail_jsonl(jsonl_path, 200)
-                msgs = parse_messages(tail)
+                merged_tail_entries: list[dict] = []
+                for jsonl_path in jsonl_paths:
+                    merged_tail_entries.extend(tail_jsonl(jsonl_path, 200))
+                msgs = parse_messages(_merge_session_entries(merged_tail_entries))
                 real_msgs    = [m for m in msgs if m["role"] != "event"]
                 msg_count    = len(real_msgs)
                 total_input  = sum(m.get("input_tok", 0) for m in real_msgs)
@@ -1066,26 +1242,22 @@ def load_all_sessions() -> list[dict]:
 
 def load_session_messages(session_id: str) -> list[dict]:
     """Load recent messages for a specific session_id."""
-    for agent_dir in AGENTS_DIR.iterdir():
-        if not agent_dir.is_dir():
-            continue
-        jsonl_path = agent_dir / "sessions" / f"{session_id}.jsonl"
-        if jsonl_path.exists():
-            entries = read_jsonl_full(jsonl_path)
-            return parse_messages(entries)
-    return []
+    paths = resolve_session_jsonl_paths(session_id)
+    if not paths:
+        return []
+
+    merged_entries: list[dict] = []
+    for jsonl_path in paths:
+        merged_entries.extend(read_jsonl_full(jsonl_path))
+    return parse_messages(_merge_session_entries(merged_entries))
+
+def find_session_jsonl_paths(session_id: str) -> list[Path]:
+    """Resolve all JSONL aliases for a session_id."""
+    return resolve_session_jsonl_paths(session_id)
 
 def find_session_jsonl_path(session_id: str) -> Path | None:
     """Resolve a session JSONL path by session_id across all agents."""
-    if not session_id:
-        return None
-    for agent_dir in AGENTS_DIR.iterdir():
-        if not agent_dir.is_dir():
-            continue
-        jsonl_path = agent_dir / "sessions" / f"{session_id}.jsonl"
-        if jsonl_path.exists():
-            return jsonl_path
-    return None
+    return resolve_session_jsonl_path(session_id)
 
 def session_file_state(path: Path) -> dict | None:
     """Return lightweight file state used to detect log updates."""
@@ -1099,6 +1271,22 @@ def session_file_state(path: Path) -> dict | None:
         return None
     except Exception:
         return None
+
+def session_paths_state(paths: list[Path]) -> dict | None:
+    """Aggregate file state for multiple JSONL alias paths."""
+    if not paths:
+        return None
+
+    states = [session_file_state(path) for path in paths]
+    states = [state for state in states if state]
+    if not states:
+        return None
+
+    return {
+        "last_mtime_ns": max(int(s["last_mtime_ns"]) for s in states),
+        "last_size": sum(int(s["last_size"]) for s in states),
+        "path_count": len(states),
+    }
 
 # ── Gateway WebSocket Client ──────────────────────────────────────────────────
 
@@ -1484,8 +1672,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _stream_session_events(self, session_id: str):
-        jsonl_path = find_session_jsonl_path(session_id)
-        if not jsonl_path:
+        session_paths = find_session_jsonl_paths(session_id)
+        if not session_paths:
             self.send_json({"error": "session not found"}, 404)
             return
 
@@ -1501,13 +1689,14 @@ class Handler(BaseHTTPRequestHandler):
         next_heartbeat = time.monotonic() + heartbeat_interval_s
 
         seq = 0
-        prev_state = session_file_state(jsonl_path)
+        prev_state = session_paths_state(session_paths)
         ready_payload = {
             "session_id": session_id,
             "hint_new_messages": False,
             "seq": seq,
             "last_mtime_ns": prev_state["last_mtime_ns"] if prev_state else None,
             "last_size": prev_state["last_size"] if prev_state else None,
+            "path_count": prev_state["path_count"] if prev_state else 0,
         }
 
         try:
@@ -1515,23 +1704,36 @@ class Handler(BaseHTTPRequestHandler):
 
             while True:
                 now = time.monotonic()
-                current_state = session_file_state(jsonl_path)
+                refreshed_paths = find_session_jsonl_paths(session_id)
+                if refreshed_paths:
+                    session_paths = refreshed_paths
+                current_state = session_paths_state(session_paths)
 
-                # Only send changed event if file actually grew (new content)
+                # Send updates when alias set or size changes; hint when bytes grew.
                 grew = False
+                changed = False
                 if prev_state and current_state:
                     grew = current_state["last_size"] > prev_state["last_size"]
+                    changed = (
+                        current_state["last_size"] != prev_state["last_size"]
+                        or current_state["last_mtime_ns"] != prev_state["last_mtime_ns"]
+                        or current_state.get("path_count", 0) != prev_state.get("path_count", 0)
+                    )
                 elif current_state and not prev_state:
                     grew = True  # File appeared
+                    changed = True
+                elif prev_state and not current_state:
+                    changed = True
                 
-                if grew:
+                if changed:
                     seq += 1
                     changed_payload = {
                         "session_id": session_id,
-                        "hint_new_messages": True,
+                        "hint_new_messages": grew,
                         "seq": seq,
                         "last_mtime_ns": current_state["last_mtime_ns"] if current_state else None,
                         "last_size": current_state["last_size"] if current_state else None,
+                        "path_count": current_state["path_count"] if current_state else 0,
                     }
                     self._sse_write("changed", changed_payload)
                 
@@ -1595,11 +1797,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 7:
                 session_id = parts[3]
                 entry_id   = parts[5]
-                full_text  = self._load_entry_full(session_id, entry_id)
-                if full_text is None:
-                    self.send_json({"error": "entry not found"}, 404)
+                full = self._load_entry_full(session_id, entry_id)
+                if not full.get("ok"):
+                    self.send_json({"error": full.get("error", "entry not found")}, 404)
                 else:
-                    self.send_json({"text": full_text})
+                    self.send_json({"text": full.get("text", "")})
             else:
                 self.send_json({"error": "invalid path"}, 400)
 
@@ -1730,19 +1932,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _load_entry_full(self, session_id: str, entry_id: str):
         """Find entry by ID in the session JSONL and return its full text content."""
-        for agent_dir in AGENTS_DIR.iterdir():
-            if not agent_dir.is_dir():
-                continue
-            jsonl_path = agent_dir / "sessions" / f"{session_id}.jsonl"
-            if not jsonl_path.exists():
-                continue
+        session_paths = resolve_session_jsonl_paths_for_entry(session_id, entry_id)
+        if not session_paths:
+            return {
+                "ok": False,
+                "error": f"session not found for id '{session_id}'",
+            }
+
+        for jsonl_path in session_paths:
             for entry in read_jsonl_full(jsonl_path):
-                if entry.get("id", "") != entry_id:
+                if str(entry.get("id", "") or "") != str(entry_id):
                     continue
                 msg = entry.get("message", {})
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    return content
+                    return {"ok": True, "text": content}
                 if isinstance(content, list):
                     parts = []
                     for block in content:
@@ -1750,9 +1954,16 @@ class Handler(BaseHTTPRequestHandler):
                             t = block.get("text") or block.get("thinking", "")
                             if t:
                                 parts.append(t)
-                    return "\n".join(parts)
-                return str(content)
-        return None
+                    return {"ok": True, "text": "\n".join(parts)}
+                return {"ok": True, "text": str(content)}
+
+        searched = ", ".join(str(p.name) for p in session_paths[:4])
+        if len(session_paths) > 4:
+            searched += ", ..."
+        return {
+            "ok": False,
+            "error": f"entry '{entry_id}' not found (searched {len(session_paths)} file(s): {searched})",
+        }
 
     def do_OPTIONS(self):
         parsed = urlparse(self.path)

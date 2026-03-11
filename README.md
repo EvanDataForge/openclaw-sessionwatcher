@@ -68,6 +68,13 @@ Dark mode is the default. An optional light mode is available for brighter envir
 - Improved assistant error visibility when assistant content is empty
 - Switched UI activity age to last visible JSONL entry timestamp before metadata fallback
 
+## Recent Runtime Hardening (post v1.2)
+
+- Added lenient `openclaw.json` parsing for gateway/cron config reads, so trailing commas no longer break Session Watcher startup/runtime reads.
+- Added alias-aware session JSONL resolution and merge logic for metadata drift cases (`sessionId` points to a new file while `sessionFile` still points to an older file).
+- Updated session list loading, session detail loading, SSE change detection, and full-entry lookup to use the same merged multi-path resolver.
+- Improved `show all` failure feedback in the UI by surfacing backend error text instead of a generic `(error)` label.
+
 ---
 
 ## Requirements
@@ -230,12 +237,14 @@ Control commands:
 ```
 ~/.openclaw/agents/*/sessions/
   sessions.json       ← session metadata (label, timestamps, model, …)
-  <session-id>.jsonl  ← message log (one JSON object per line)
+  <session-id>.jsonl  ← message log (one JSON object per line; resolver can merge alias files)
           │
           ▼
     server.py
   ┌─────────────────────────────┐
   │  load_all_sessions()        │  reads sessions.json + tail of each JSONL
+  │  resolve_session_jsonl_paths() │ resolves canonical + alias JSONL paths
+  │  _merge_session_entries()   │ merges/de-dupes entries across alias files
   │  parse_messages()           │  structures raw entries into display records
   │  _tool_result_preview()     │  trims large tool results to 300 chars
   │  _dedupe_retry_user_messages() │ collapses retry duplicate user entries

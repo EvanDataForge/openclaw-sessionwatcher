@@ -2006,9 +2006,15 @@ async function fetchAndShowFull(btn) {
   } catch(e) {
     if (e?.authRequired) {
       State.authError = authMessage(e);
-      document.getElementById('refresh-info').textContent = State.authError;
+      const footerMeta = document.getElementById('footer-meta');
+      if (footerMeta) footerMeta.title = State.authError;
     }
-    btn.textContent = '(error)';
+    const rawErr = String(e?.payload?.error || e?.message || '').trim();
+    const shortErr = rawErr
+      ? `error: ${rawErr.length > 96 ? rawErr.slice(0, 93) + '...' : rawErr}`
+      : '(error)';
+    btn.textContent = shortErr;
+    btn.title = rawErr || 'Failed to load full entry';
     btn.disabled = false;
   }
 }
