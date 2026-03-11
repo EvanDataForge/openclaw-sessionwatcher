@@ -359,6 +359,72 @@ class TestLoopbackWithoutToken(ServerProcessMixin, unittest.TestCase):
         self.assertEqual(subagent_session["type"], "subagent")
         self.assertEqual(subagent_session["label"], "bugfix-task-watchdog")
 
+    def test_telegram_group_uses_metadata_group_name_when_origin_is_stale(self):
+        root = Path(self.tempdir.name)
+        sessions_dir = root / "agents" / "main" / "sessions"
+        sessions_file = sessions_dir / "sessions.json"
+        sessions = json.loads(sessions_file.read_text(encoding="utf-8"))
+
+        group_key = "agent:main:telegram:group:-1003714689801"
+        group_session_id = "sess-tg-group-1"
+        sessions[group_key] = {
+            "sessionId": group_session_id,
+            "updatedAt": int(time.time() * 1000),
+            "lastChannel": "telegram",
+            "model": "gpt-5.4",
+            "contextPct": 0,
+            "deliveryContext": {"channel": "telegram"},
+            # Simulate stale origin metadata that no longer carries Telegram group labels.
+            "origin": {
+                "provider": "webchat",
+                "surface": "webchat",
+                "chatType": "direct",
+            },
+        }
+        sessions_file.write_text(json.dumps(sessions), encoding="utf-8")
+
+        group_entries = [
+            {
+                "id": "group-entry-1",
+                "timestamp": "2026-03-10T20:27:15.691Z",
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Conversation info (untrusted metadata):\n"
+                                "```json\n"
+                                "{\n"
+                                '  "message_id": "90",\n'
+                                '  "sender_id": "6824095908",\n'
+                                '  "conversation_label": "Clawdine Sidechannel id:-1003714689801",\n'
+                                '  "group_subject": "Clawdine Sidechannel",\n'
+                                '  "is_group_chat": true\n'
+                                "}\n"
+                                "```\n\n"
+                                "Test message"
+                            ),
+                        }
+                    ],
+                    "usage": {"input": 0, "output": 0, "cost": {"total": 0}},
+                },
+            }
+        ]
+        with (sessions_dir / f"{group_session_id}.jsonl").open("w", encoding="utf-8") as handle:
+            for entry in group_entries:
+                handle.write(json.dumps(entry) + "\n")
+
+        status, _headers, body = self.request("/api/sessions")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+
+        group_session = next((s for s in data["sessions"] if s["key"] == group_key), None)
+        self.assertIsNotNone(group_session)
+        self.assertEqual(group_session["type"], "group")
+        self.assertEqual(group_session["label"], "Clawdine Sidechannel")
+
     def test_sessions_summary_msg_count_matches_detail_message_count(self):
         root = Path(self.tempdir.name)
         sessions_dir = root / "agents" / "main" / "sessions"

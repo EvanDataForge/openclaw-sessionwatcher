@@ -62,6 +62,14 @@ _DIRECT_GATEWAY_IDS = {
     "gateway-client",
     "openclaw-control-ui",
 }
+_GENERIC_ORIGIN_LABELS = {
+    "direct",
+    "direct/webchat",
+    "direct / webchat",
+    "webchat",
+    "telegram",
+    "group",
+}
 
 def strip_metadata(text: str) -> tuple[str, bool]:
     """Strip leading 'untrusted metadata' blocks injected by the gateway.
@@ -181,6 +189,112 @@ def strip_gateway_time_prefix(text: str) -> str:
     if not text:
         return ""
     return _GATEWAY_TIME_PREFIX_PATTERN.sub('', str(text), count=1).strip()
+
+
+def _looks_like_session_key(value: str) -> bool:
+    s = str(value or "").strip()
+    return s.startswith("agent:") and ":" in s
+
+
+def _is_generic_origin_label(value: str) -> bool:
+    s = str(value or "").strip().casefold()
+    if not s:
+        return True
+    if s in _GENERIC_ORIGIN_LABELS:
+        return True
+    return s.startswith("dm ")
+
+
+def _extract_group_name_from_conversation_label(value: str) -> str:
+    """Extract display name from labels like 'Clawdine Sidechannel id:-100...'."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    for sep in (" id:", " (id:", " [id:"):
+        idx = raw.casefold().find(sep)
+        if idx > 0:
+            return raw[:idx].strip()
+
+    return raw
+
+
+def _content_text_blocks(content) -> list[str]:
+    """Extract plain text blocks from OpenClaw message content payload."""
+    out: list[str] = []
+
+    if isinstance(content, str):
+        txt = content.strip()
+        return [txt] if txt else []
+
+    if not isinstance(content, list):
+        return out
+
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type", "")).strip() != "text":
+            continue
+        txt = str(block.get("text", "")).strip()
+        if txt:
+            out.append(txt)
+
+    return out
+
+
+def infer_telegram_group_label_from_entries(entries: list[dict]) -> str:
+    """Best-effort group name extraction from untrusted Telegram metadata."""
+    if not entries:
+        return ""
+
+    for entry in reversed(entries):
+        if not isinstance(entry, dict) or entry.get("type") != "message":
+            continue
+
+        msg = entry.get("message")
+        if not isinstance(msg, dict):
+            continue
+
+        for text in _content_text_blocks(msg.get("content", [])):
+            blocks = parse_untrusted_metadata_blocks(text)
+            if not blocks:
+                continue
+
+            for block in reversed(blocks):
+                if not isinstance(block, dict):
+                    continue
+
+                group_subject = str(block.get("group_subject", "")).strip()
+                if group_subject:
+                    return group_subject
+
+                conversation_label = _extract_group_name_from_conversation_label(
+                    block.get("conversation_label", "")
+                )
+                if conversation_label:
+                    return conversation_label
+
+    return ""
+
+
+def infer_telegram_group_label_from_paths(jsonl_paths: list[Path]) -> str:
+    """Find Telegram group label from recent session history JSONL aliases."""
+    if not jsonl_paths:
+        return ""
+
+    # Fast path: scan recent tails first.
+    for path in reversed(jsonl_paths):
+        label = infer_telegram_group_label_from_entries(tail_jsonl(path, 250))
+        if label:
+            return label
+
+    # Fallback: scan full files if recent tail did not contain metadata.
+    for path in reversed(jsonl_paths):
+        label = infer_telegram_group_label_from_entries(read_jsonl_full(path))
+        if label:
+            return label
+
+    return ""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1366,10 +1480,31 @@ def load_all_sessions() -> list[dict]:
                         cron_id = ""
 
             if stype == "group":
-                # origin.label contains the group subject e.g. "Clawdine Twittering"
-                label = origin_label or val.get("deliveryContext", {}).get("groupSubject", "") or key
+                delivery_ctx = val.get("deliveryContext") or {}
+                group_subject = ""
+                if isinstance(delivery_ctx, dict):
+                    group_subject = str(
+                        delivery_ctx.get("groupSubject") or delivery_ctx.get("group_subject") or ""
+                    ).strip()
+
+                origin_group_subject = str(
+                    origin.get("groupSubject") or origin.get("group_subject") or ""
+                ).strip()
+
+                origin_group_label = ""
+                if origin_label and not _looks_like_session_key(origin_label) and not _is_generic_origin_label(origin_label):
+                    origin_group_label = _extract_group_name_from_conversation_label(origin_label)
+
+                history_group_label = ""
+                if not (group_subject or origin_group_subject or origin_group_label) and has_file:
+                    history_group_label = infer_telegram_group_label_from_paths(jsonl_paths)
+
+                label = group_subject or origin_group_subject or origin_group_label or history_group_label or key
             elif stype == "telegram":
-                label = origin_label or f"DM {parts[-1]}" if parts else key
+                origin_dm_label = ""
+                if origin_label and not _looks_like_session_key(origin_label) and not _is_generic_origin_label(origin_label):
+                    origin_dm_label = origin_label
+                label = origin_dm_label or (f"DM {parts[-1]}" if parts else key)
             elif stype == "cron":
                 label = cron_name_map.get(cron_id, "") or origin_label or key
             elif stype == "subagent":
