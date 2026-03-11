@@ -27,6 +27,8 @@ Dark mode is the default. An optional light mode is available for brighter envir
 - Subtle footer meta line with session count and last refresh time
 - Per-session message stream with structured rendering:
   - WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
+  - Dedicated right-aligned **Inter-session cards** for `provenance.kind=inter_session` payloads (not rendered as normal user chat bubbles)
+  - Inter-session preview mode: starts after `<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>` when present, compact default snippet, inline **(show all)** in the text panel
   - User & assistant text messages (with `\n` → line break support)
   - Grouped **system-entry bubbles** for non-text assistant/internal records, so headers, thinking, tool calls, tool results, and token stats stay visually connected
   - Smooth entry transitions in the selected session: newly arriving entries fade in quickly, and changed entries (text/tool/event updates) get a brief highlight pulse
@@ -74,6 +76,12 @@ Dark mode is the default. An optional light mode is available for brighter envir
 - Added alias-aware session JSONL resolution and merge logic for metadata drift cases (`sessionId` points to a new file while `sessionFile` still points to an older file).
 - Updated session list loading, session detail loading, SSE change detection, and full-entry lookup to use the same merged multi-path resolver.
 - Improved `show all` failure feedback in the UI by surfacing backend error text instead of a generic `(error)` label.
+- Added explicit message provenance fields from backend parsing (`provenance_kind`, `provenance_source_session_key`, `provenance_source_channel`, `provenance_source_tool`) for robust frontend rendering decisions.
+- Added dedicated Inter-session rendering path in the UI:
+  - stays right-aligned (input side) but uses a non-bubble card style
+  - shows source session/channel/tool metadata in-header
+  - includes message ID copy + raw JSON actions like other message types
+  - truncates long payloads with inline **(show all)** expansion
 
 ---
 
@@ -302,6 +310,8 @@ Assistant messages are further decomposed into typed blocks:
 - `thinking` → collapsible thinking block (encrypted content flagged automatically)
 - `toolCall` → tool call with formatted arguments, truncated + expandable
 - `toolResult` (embedded) → result preview, full text fetchable on demand
+
+For `message.role=user` entries, `message.provenance.kind=inter_session` is detected and rendered as a dedicated Inter-session card with metadata and compact preview/expand behavior.
 
 ToolResult entries also expose detail status (`ok/error/failed/running/accepted/completed`) and assistant errors (`errorMessage`) are surfaced even when assistant text content is empty.
 

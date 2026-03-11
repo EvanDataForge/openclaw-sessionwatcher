@@ -391,11 +391,18 @@
     gap: 3px;
     max-width: 92%;
   }
+  .msg-intersession-wrap {
+    align-self: flex-end;
+    width: min(82%, 960px);
+    max-width: 82%;
+  }
   .msg-bubble.entry-new,
+  .msg-intersession-wrap.entry-new,
   .msg-event.entry-new {
     animation: entry-in .2s ease-out;
   }
   .msg-bubble.entry-updated,
+  .msg-intersession-wrap.entry-updated,
   .msg-event.entry-updated {
     animation: entry-update .38s ease-out;
   }
@@ -411,6 +418,8 @@
   @media (prefers-reduced-motion: reduce) {
     .msg-bubble.entry-new,
     .msg-bubble.entry-updated,
+    .msg-intersession-wrap.entry-new,
+    .msg-intersession-wrap.entry-updated,
     .msg-event.entry-new,
     .msg-event.entry-updated {
       animation: none;
@@ -496,7 +505,95 @@
   .msg-role.user.source-direct { color: var(--teal); }
   .msg-role.assistant { color: var(--purple); }
   .msg-role.toolresult { color: var(--green); }
+  .msg-role.intersession { color: var(--orange); }
   .msg-model { color: var(--muted); }
+
+  .msg-intersession {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 9px 11px;
+    border: 1px dashed rgba(245,166,35,.45);
+    border-left: 3px solid rgba(245,166,35,.55);
+    border-radius: 6px;
+    background: rgba(245,166,35,.06);
+  }
+  .msg-intersession-header {
+    padding: 0;
+  }
+  .msg-intersession-tool {
+    display: inline-block;
+    font-size: 9px;
+    letter-spacing: .03em;
+    text-transform: none;
+    color: var(--orange);
+    opacity: .9;
+    border: 1px solid rgba(245,166,35,.38);
+    border-radius: 3px;
+    padding: 0 5px;
+    line-height: 1.5;
+  }
+  .msg-intersession-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .msg-intersession-meta span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid rgba(245,166,35,.26);
+    border-radius: 4px;
+    padding: 1px 6px;
+    background: rgba(245,166,35,.08);
+  }
+  .msg-intersession-meta strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .msg-intersession-body {
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 4px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .msg-intersession-body-text {
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
+  .msg-intersession-body-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .msg-intersession-body-actions .show-all-btn {
+    margin-top: 0;
+  }
+
+  body.light .msg-intersession {
+    border-color: rgba(217,119,6,.45);
+    border-left-color: rgba(217,119,6,.56);
+    background: rgba(217,119,6,.06);
+  }
+  body.light .msg-intersession-tool {
+    border-color: rgba(217,119,6,.4);
+    color: #9a5e08;
+  }
+  body.light .msg-intersession-meta span {
+    border-color: rgba(217,119,6,.26);
+    background: rgba(217,119,6,.08);
+  }
+  body.light .msg-intersession-body {
+    background: rgba(15,23,42,.03);
+    border-color: rgba(15,23,42,.14);
+  }
 
   .msg-id-chip {
     display: inline-flex;
@@ -1012,6 +1109,7 @@
   #messages.chat-only .block-thinking,
   #messages.chat-only .block-toolcall,
   #messages.chat-only .block-toolresult,
+  #messages.chat-only .msg-intersession-wrap,
   #messages.chat-only .thinking-tc-bridge,
   #messages.chat-only .thinking-only-warning,
   #messages.chat-only [data-role="toolresult"] { display: none !important; }
@@ -1625,7 +1723,12 @@ const Scroll = {
 const RawStore = {};
 const ToolFullStore = {};
 const ArgsStore = {};
+const InterSessionStore = {};
 const ExpandedFull = {}; // entryId → full text, persists across re-renders
+const ExpandedInterSession = {}; // inter-session key -> expanded state
+
+const INTER_SESSION_BEGIN_MARKER = '<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>';
+const INTER_SESSION_PREVIEW_LIMIT = 420;
 
 function expandArgs(key) {
   const el = document.querySelector(`.block-toolcall-args[data-akey="${key}"]`);
@@ -1634,6 +1737,47 @@ function expandArgs(key) {
     el.style.maxHeight = 'none';
   }
   const btn = document.querySelector(`.show-all-btn[data-akey="${key}"]`);
+  if (btn) btn.remove();
+}
+
+function buildInterSessionPreview(fullText) {
+  const full = String(fullText || '');
+  if (!full) {
+    return { previewText: '', showAll: false };
+  }
+
+  const markerIdx = full.indexOf(INTER_SESSION_BEGIN_MARKER);
+  const markerFound = markerIdx >= 0;
+  const markerEnd = markerFound ? markerIdx + INTER_SESSION_BEGIN_MARKER.length : 0;
+  const markerSlice = markerFound ? full.slice(markerEnd).replace(/^\s+/, '') : full;
+  const omittedPrefix = markerIdx > 0;
+  const omittedMarker = markerFound;
+  const lengthTrimmed = markerSlice.length > INTER_SESSION_PREVIEW_LIMIT;
+  const previewText = lengthTrimmed
+    ? markerSlice.slice(0, INTER_SESSION_PREVIEW_LIMIT).trimEnd()
+    : markerSlice;
+
+  return {
+    previewText,
+    showAll: omittedPrefix || omittedMarker || lengthTrimmed,
+  };
+}
+
+function expandInterSession(key) {
+  const iKey = String(key || '');
+  if (!iKey) return;
+
+  ExpandedInterSession[iKey] = true;
+  const fullText = InterSessionStore[iKey] || '';
+  const textEl = document.querySelector(`.msg-intersession-body-text[data-ikey-text="${iKey}"]`);
+  if (textEl) {
+    textEl.innerHTML = escText(fullText);
+  } else {
+    const bodyEl = document.querySelector(`.msg-intersession-body[data-ikey="${iKey}"]`);
+    if (bodyEl) bodyEl.innerHTML = escText(fullText);
+  }
+
+  const btn = document.querySelector(`.show-all-btn[data-ikey="${iKey}"]`);
   if (btn) btn.remove();
 }
 
@@ -1665,6 +1809,47 @@ function getAssistantErrorText(message) {
   const direct = String(message?.error_message || message?.errorMessage || '').trim();
   if (direct) return direct;
   return extractErrorMessageFromRaw(message?.raw_json || '');
+}
+
+function getMessageProvenance(message) {
+  const fromPayload = {
+    kind: String(message?.provenance_kind || '').trim(),
+    sourceSessionKey: String(message?.provenance_source_session_key || '').trim(),
+    sourceChannel: String(message?.provenance_source_channel || '').trim(),
+    sourceTool: String(message?.provenance_source_tool || '').trim(),
+  };
+
+  if (fromPayload.kind || fromPayload.sourceSessionKey || fromPayload.sourceChannel || fromPayload.sourceTool) {
+    return fromPayload;
+  }
+
+  const raw = String(message?.raw_json || '').trim();
+  if (!raw) {
+    return { kind: '', sourceSessionKey: '', sourceChannel: '', sourceTool: '' };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const provenance = parsed?.message?.provenance;
+    if (!provenance || typeof provenance !== 'object') {
+      return { kind: '', sourceSessionKey: '', sourceChannel: '', sourceTool: '' };
+    }
+    return {
+      kind: String(provenance.kind || '').trim(),
+      sourceSessionKey: String(provenance.sourceSessionKey || '').trim(),
+      sourceChannel: String(provenance.sourceChannel || '').trim(),
+      sourceTool: String(provenance.sourceTool || '').trim(),
+    };
+  } catch (_) {
+    return { kind: '', sourceSessionKey: '', sourceChannel: '', sourceTool: '' };
+  }
+}
+
+function shortenMiddle(value, start = 34, end = 12) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.length <= start + end + 3) return text;
+  return `${text.slice(0, start)}...${text.slice(-end)}`;
 }
 
 function authMessage(error) {
@@ -2103,6 +2288,7 @@ function renderMessages(messages, transitions = {}) {
   // Clear caches
   Object.keys(RawStore).forEach(k => delete RawStore[k]);
   Object.keys(ArgsStore).forEach(k => delete ArgsStore[k]);
+  Object.keys(InterSessionStore).forEach(k => delete InterSessionStore[k]);
 
   if (!messages.length) {
     el.innerHTML = `<div class="empty">
@@ -2128,16 +2314,56 @@ function renderMessages(messages, transitions = {}) {
     // ── User bubble ──
     if (m.role === 'user') {
       const text = m.text || (m.blocks||[]).filter(b=>b.kind==='text').map(b=>b.text).join('\n') || '';
+      const provenance = getMessageProvenance(m);
+      const isInterSession = provenance.kind === 'inter_session';
       const sourceChannel = (m.source_channel || 'unknown').toLowerCase();
       const sourceClass = ['direct', 'telegram'].includes(sourceChannel) ? ` source-${sourceChannel}` : ' source-unknown';
       const sourceLabel = sourceChannel === 'telegram' ? 'Telegram' : (sourceChannel === 'direct' ? 'Direct' : 'You');
       RawStore[idx] = m.raw_json || '';
       if (!text.trim()) return '';
+      const rightIdChip = m.id
+        ? `<span class="msg-id-chip" title="${esc(m.id)}"><span class="chip-text">${esc(m.id.slice(0,8))}</span><button class="copy-btn" onclick="copyMsgId('${esc(m.id)}',this)" title="Copy ID">⧉</button><button class="copy-btn" onclick="openRawModal(${idx}, this)" title="View raw JSON">{raw}</button></span>`
+        : '';
+
+      if (isInterSession) {
+        const sourceSessionKey = provenance.sourceSessionKey || 'unknown';
+        const sourceSessionShort = shortenMiddle(sourceSessionKey, 34, 12);
+        const sourceTool = provenance.sourceTool || 'unknown';
+        const sourceLabelValue = provenance.sourceChannel || 'unknown';
+        const interRawKey = m.id ? `id:${m.id}` : `idx:${idx}|ts:${m.ts_fmt}`;
+        const interKey = encodeURIComponent(interRawKey);
+        const expanded = !!ExpandedInterSession[interKey];
+        InterSessionStore[interKey] = text;
+        const preview = buildInterSessionPreview(text);
+        const displayText = expanded ? text : preview.previewText;
+        const showAllBtn = (!expanded && preview.showAll)
+          ? `<button class="show-all-btn" data-ikey="${esc(interKey)}" onclick="expandInterSession('${esc(interKey)}')">(show all)</button>`
+          : '';
+        return `<div class="msg-intersession-wrap${transitionClass}" data-msgidx="${idx}">
+          <div class="msg-intersession">
+            <div class="msg-header msg-intersession-header">
+              <span class="msg-role intersession">Inter-session</span>
+              <span class="msg-intersession-tool">Tool: ${esc(sourceTool)}</span>
+              ${rightIdChip}
+              <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
+            </div>
+            <div class="msg-intersession-meta">
+              <span><strong>From</strong> ${esc(sourceSessionShort)}</span>
+              <span><strong>Channel</strong> ${esc(sourceLabelValue)}</span>
+            </div>
+            <div class="msg-intersession-body" data-ikey="${esc(interKey)}">
+              <div class="msg-intersession-body-text" data-ikey-text="${esc(interKey)}">${escText(displayText)}</div>
+              ${showAllBtn ? `<div class="msg-intersession-body-actions">${showAllBtn}</div>` : ''}
+            </div>
+          </div>
+        </div>`;
+      }
+
       return `<div class="msg-bubble user${sourceClass}${transitionClass}" data-msgidx="${idx}">
         <div class="msg-header">
           <span class="msg-role user${sourceClass}">${esc(sourceLabel)}</span>
+          ${rightIdChip}
           <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
-          ${m.id ? `<button class="copy-btn" onclick="openRawModal(${idx}, this)" title="Raw JSON">{raw}</button>` : ''}
         </div>
         <div class="msg-body">${escText(text)}</div>
       </div>`;
@@ -2629,6 +2855,7 @@ const App = {
     // Clear expanded state when switching to a different session
     if (State.detailSessionId !== s.session_id) {
       Object.keys(ExpandedFull).forEach(k => delete ExpandedFull[k]);
+      Object.keys(ExpandedInterSession).forEach(k => delete ExpandedInterSession[k]);
       State.detailEntrySignatures = {};
     }
 

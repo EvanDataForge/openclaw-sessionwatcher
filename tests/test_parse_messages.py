@@ -4,6 +4,40 @@ import server
 
 
 class ParseMessagesErrorFallbackTests(unittest.TestCase):
+    def test_user_inter_session_provenance_is_exposed(self):
+        entries = [
+            {
+                "type": "message",
+                "id": "prov-1",
+                "timestamp": "2026-03-11T10:52:34.493Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "internal child result"}],
+                    "provenance": {
+                        "kind": "inter_session",
+                        "sourceSessionKey": "agent:main:subagent:abc",
+                        "sourceChannel": "webchat",
+                        "sourceTool": "subagent_announce",
+                    },
+                    "usage": {
+                        "input": 0,
+                        "output": 0,
+                        "cost": {"total": 0},
+                    },
+                },
+            }
+        ]
+
+        parsed = server.parse_messages(entries)
+
+        self.assertEqual(len(parsed), 1)
+        msg = parsed[0]
+        self.assertEqual(msg["role"], "user")
+        self.assertEqual(msg["provenance_kind"], "inter_session")
+        self.assertEqual(msg["provenance_source_session_key"], "agent:main:subagent:abc")
+        self.assertEqual(msg["provenance_source_channel"], "webchat")
+        self.assertEqual(msg["provenance_source_tool"], "subagent_announce")
+
     def test_assistant_error_message_is_preserved_when_content_is_empty(self):
         error_text = (
             'Codex error: {"type":"error","error":{"type":"server_error",'

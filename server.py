@@ -964,6 +964,11 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             continue
 
         raw_json = json.dumps(entry, ensure_ascii=False)
+        provenance = msg.get("provenance", {}) if isinstance(msg.get("provenance", {}), dict) else {}
+        provenance_kind = str(provenance.get("kind", "") or "").strip()
+        provenance_source_session_key = str(provenance.get("sourceSessionKey", "") or "").strip()
+        provenance_source_channel = str(provenance.get("sourceChannel", "") or "").strip()
+        provenance_source_tool = str(provenance.get("sourceTool", "") or "").strip()
 
         # ── toolResult ────────────────────────────────────────
         if role == "toolResult":
@@ -990,6 +995,10 @@ def parse_messages(entries: list[dict]) -> list[dict]:
                 "source_channel": "unknown",
                 "source_label": "",
                 "source_id": "",
+                "provenance_kind": provenance_kind,
+                "provenance_source_session_key": provenance_source_session_key,
+                "provenance_source_channel": provenance_source_channel,
+                "provenance_source_tool": provenance_source_tool,
                 "error_message": "",
                 "blocks": [],
             })
@@ -1072,6 +1081,10 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             "source_channel": source_info["source_channel"],
             "source_label": source_info["source_label"],
             "source_id": source_info["source_id"],
+            "provenance_kind": provenance_kind,
+            "provenance_source_session_key": provenance_source_session_key,
+            "provenance_source_channel": provenance_source_channel,
+            "provenance_source_tool": provenance_source_tool,
             "blocks":       blocks,
             "ts_iso":       entry.get("timestamp", ""),
             "ts_fmt":       fmt_iso(entry.get("timestamp", "")),
