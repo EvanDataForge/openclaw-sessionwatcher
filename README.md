@@ -130,56 +130,48 @@ If you want to send chat messages from the dashboard UI, install the optional pa
 
 If you use a different interpreter for SessionWatcher, install `websocket-client` there instead.
 
+### macOS LaunchAgent Setup (optional auto-start)
+
+To run OpenClaw Session Watcher as a macOS LaunchAgent that starts automatically on login:
+
+```bash
+./start.sh install
+```
+
+This creates a LaunchAgent plist and starts the service. To remove auto-start:
+
+```bash
+./start.sh uninstall
+```
+
 ---
 
 ## Usage
 
-### Start
+### Basic Commands
 
 ```bash
-./start.sh
+./start.sh              # Start the session watcher (default)
+./start.sh stop         # Stop the running instance
+./start.sh restart      # Stop and start
+./start.sh install      # Install as macOS LaunchAgent (auto-start on login)
+./start.sh uninstall    # Remove LaunchAgent auto-start
 ```
 
 Then open **http://127.0.0.1:8090** in your browser.
 
-Or start manually:
+### Python Options
 
-```bash
-python3 server.py
-```
-
-`start.sh` prefers `../.venv/bin/python` automatically. You can override with:
+`start.sh` automatically uses `../.venv/bin/python` if it exists, otherwise `python3`. Override with:
 
 ```bash
 SESSIONWATCHER_PYTHON=/path/to/python ./start.sh
 ```
 
-### Stop
+If you need to start the server manually without the wrapper script:
 
 ```bash
-kill $(cat server.pid)
-```
-
-### macOS launchctl control
-
-If OpenClaw Session Watcher is installed as a LaunchAgent, you can control it with:
-
-```bash
-./launchctl.sh start
-./launchctl.sh stop
-./launchctl.sh restart
-./launchctl.sh status
-./launchctl.sh logs
-```
-
-Short zsh helpers are also available in interactive shells:
-
-```bash
-sw-start
-sw-stop
-sw-restart
-sw-status
-sw-logs
+python3 server.py --port 8090 --bind 127.0.0.1
 ```
 
 ### Options
@@ -244,15 +236,15 @@ Typical properties of the LaunchAgent setup:
 - restarts automatically if it exits (`KeepAlive`)
 - writes logs to `logs/launchd.log`
 - can inject `SESSIONWATCHER_BIND`, `SESSIONWATCHER_PORT`, and `SESSIONWATCHER_ACCESS_TOKEN`
+- plist location: `~/Library/LaunchAgents/com.openclaw.sessionwatcher.plist`
 
-Control commands:
+Control commands via `start.sh`:
 
 ```bash
-./launchctl.sh start
-./launchctl.sh stop
-./launchctl.sh restart
-./launchctl.sh status
-./launchctl.sh logs
+./start.sh install       # Install and start LaunchAgent
+./start.sh uninstall     # Remove LaunchAgent auto-start
+./start.sh restart       # Restart (works whether running manually or via LaunchAgent)
+./start.sh stop          # Stop (works whether running manually or via LaunchAgent)
 ```
 
 ---
@@ -337,14 +329,20 @@ ToolResult entries also expose detail status (`ok/error/failed/running/accepted/
 ### Troubleshooting: `Gateway not connected` (HTTP 503)
 
 1. Verify the running interpreter can import `websocket` (`websocket-client` package).
-2. If using LaunchAgent, check runtime program path:
+2. If using LaunchAgent auto-start, check the runtime program path in the plist:
 
 ```bash
-launchctl print gui/$(id -u)/com.openclaw.sessionwatcher | sed -n '1,80p'
+cat ~/Library/LaunchAgents/com.openclaw.sessionwatcher.plist | grep -A1 -B1 ProgramArguments
 ```
 
-3. Ensure `ProgramArguments[0]` points to the same interpreter where `websocket-client` is installed.
-4. Reload the agent after changes:
+3. Ensure the Python executable path points to the interpreter where `websocket-client` is installed.
+4. Reload the agent after making changes:
+
+```bash
+./start.sh restart
+```
+
+Or manually:
 
 ```bash
 launchctl bootout gui/$(id -u)/com.openclaw.sessionwatcher
