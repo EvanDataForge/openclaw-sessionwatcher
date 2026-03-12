@@ -193,7 +193,13 @@ def strip_gateway_time_prefix(text: str) -> str:
 
 def _looks_like_session_key(value: str) -> bool:
     s = str(value or "").strip()
-    return s.startswith("agent:") and ":" in s
+    # Detect session keys like "agent:main:...", "telegram:group:...", "cron:...", etc.
+    # All session keys contain colons and start with known prefixes
+    if not (":" in s):
+        return False
+    # Check against known session key prefixes
+    known_prefixes = ("agent:", "telegram:", "cron:", "acp:", "subagent:")
+    return any(s.startswith(prefix) for prefix in known_prefixes)
 
 
 def _is_generic_origin_label(value: str) -> bool:
@@ -1469,6 +1475,7 @@ def load_all_sessions() -> list[dict]:
         sess_dir = agent_dir / "sessions"
 
         for key, val in store.items():
+            key = key.strip()  # Clean up any leading/trailing whitespace in session keys
             if ":run:" in key:
                 continue  # skip cron run sub-sessions
 
@@ -1570,7 +1577,7 @@ def load_all_sessions() -> list[dict]:
                 if not (group_subject or origin_group_subject or origin_group_label) and has_file:
                     history_group_label = infer_telegram_group_label_from_paths(jsonl_paths)
 
-                label = group_subject or origin_group_subject or origin_group_label or history_group_label or key
+                label = group_subject or origin_group_subject or origin_group_label or history_group_label or key.strip()
             elif stype == "telegram":
                 origin_dm_label = ""
                 if origin_label and not _looks_like_session_key(origin_label) and not _is_generic_origin_label(origin_label):
