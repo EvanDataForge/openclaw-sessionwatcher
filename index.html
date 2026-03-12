@@ -275,6 +275,7 @@
   .type-group    { background: rgba(45,212,191,.2);  color: var(--type-group); }
   .type-telegram { background: rgba(166,123,255,.2); color: var(--type-telegram); }
   .type-cron     { background: rgba(250,204,21,.2);  color: var(--type-cron); }
+  body.light .type-cron { color: #92400e; }
   .type-subagent { background: rgba(245,166,35,.2);  color: var(--type-subagent); }
   .type-other    { background: rgba(90,97,117,.2);   color: var(--type-other); }
 
@@ -2681,11 +2682,37 @@ const App = {
     this.refresh();
   },
 
+  _clearSelection() {
+    State.selectedId     = null;
+    State.selectedAnchor = null;
+    this._closeDetailStream();
+    this._stopDetailFallback();
+    document.querySelectorAll('.session-card').forEach(el => el.classList.remove('selected'));
+    const titleEl = document.getElementById('detail-title');
+    if (titleEl) { titleEl.innerHTML = ''; titleEl.textContent = '← Select a session'; titleEl.style.color = 'var(--muted)'; titleEl.style.fontWeight = '400'; }
+    const metaEl = document.getElementById('detail-meta');
+    if (metaEl) metaEl.textContent = '';
+    const statsEl = document.getElementById('detail-stats');
+    if (statsEl) { statsEl.style.display = 'none'; statsEl.innerHTML = ''; }
+    const msgsEl = document.getElementById('messages');
+    if (msgsEl) msgsEl.innerHTML = '<div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Select a session to view messages</div></div>';
+    ChatInput.hide();
+  },
+
   setFilter(type, btn) {
-      animateButton(btn);
+    animateButton(btn);
     State.filter = type;
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+
+    // If the selected session doesn't match the new filter, deselect it.
+    if (State.selectedId && type !== 'all') {
+      const sel = State.sessions.find(s => s.session_id === State.selectedId);
+      if (sel && sel.type !== type) {
+        this._clearSelection();
+      }
+    }
+
     renderSessionList();
   },
 
@@ -2704,6 +2731,7 @@ const App = {
   },
 
   async selectSession(sessionId) {
+    if (sessionId === State.selectedId) return;
     const selectedCard = document.querySelector(`.session-card[data-id="${sessionId}"]`);
     if (selectedCard) animateButton(selectedCard);
     State.detailLoadToken++;

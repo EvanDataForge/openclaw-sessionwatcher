@@ -1447,9 +1447,10 @@ def load_all_sessions() -> list[dict]:
                 if msgs:
                     last_ts_iso = msgs[-1]["ts_iso"]
 
-            # Prefer the JSONL last-message timestamp over sessions.json updatedAt,
-            # because sessions.json is only written at session end / checkpoints,
-            # not during active inference.
+            # Use the JSONL last-message timestamp as the authoritative sort key.
+            # sessions.json updatedAt is only written at session end / checkpoints,
+            # so it can be hours ahead of the last visible message. Fall back to
+            # sessions.json updatedAt only when no JSONL file exists.
             last_ts_ms = 0
             if last_ts_iso:
                 try:
@@ -1457,7 +1458,7 @@ def load_all_sessions() -> list[dict]:
                     last_ts_ms = int(dt.timestamp() * 1000)
                 except Exception:
                     pass
-            effective_updated_at = max(updated_at, last_ts_ms)
+            effective_updated_at = last_ts_ms if last_ts_ms else updated_at
 
             stype = session_type(key, val)
 
