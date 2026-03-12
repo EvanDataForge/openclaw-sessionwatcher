@@ -1523,6 +1523,29 @@ def load_all_sessions() -> list[dict]:
                         break
                 if msgs:
                     last_ts_iso = msgs[-1]["ts_iso"]
+            elif val.get("acp"):
+                # ACP session without JSONL — load msg count and stop reason from acpx file
+                acp_identity = val.get("acp", {}).get("identity", {})
+                acpx_sid = acp_identity.get("acpxSessionId", "")
+                if acpx_sid:
+                    acpx_file = Path.home() / ".acpx" / "sessions" / f"{acpx_sid}.json"
+                    try:
+                        with open(acpx_file) as f:
+                            acpx_data = json.load(f)
+                        acpx_msgs = acpx_data.get("messages", [])
+                        msg_count = len(acpx_msgs)
+                        # Determine stop reason from last Agent content
+                        for acpx_msg in reversed(acpx_msgs):
+                            if "Agent" in acpx_msg:
+                                content = acpx_msg["Agent"].get("content", [])
+                                for block in reversed(content):
+                                    if isinstance(block, dict) and "ToolResult" in block:
+                                        if block["ToolResult"].get("is_error"):
+                                            last_stop_reason = "error"
+                                        break
+                                break
+                    except Exception:
+                        pass
 
             # Use the JSONL last-message timestamp as the authoritative sort key.
             # sessions.json updatedAt is only written at session end / checkpoints,
@@ -1590,10 +1613,13 @@ def load_all_sessions() -> list[dict]:
             elif stype == "subagent":
                 label = explicit_label or origin_label or (parts[-1] if parts else key)
             elif stype == "main":
-                if val.get("lastChannel") == "webchat" or (val.get("origin") or {}).get("provider") == "webchat":
+                origin_provider = str((val.get("origin") or {}).get("provider", "") or "").strip()
+                if origin_label and not _looks_like_session_key(origin_label) and not _is_generic_origin_label(origin_label):
+                    label = origin_label
+                elif val.get("lastChannel") == "webchat" or origin_provider == "webchat":
                     label = "Direct / Webchat"
                 else:
-                    label = origin_label or "Direct"
+                    label = "Direct"
             else:
                 label = origin_label or (":".join(parts[2:]) if len(parts) > 2 else key)
 
@@ -1652,6 +1678,19 @@ def load_all_sessions() -> list[dict]:
                 acp_identity_state = acp_identity.get("state", "unknown")
                 acp_agent = acp_data.get("agent", "")
                 acp_session_id = acp_identity.get("acpxSessionId", "")
+
+                # Check acpx session file for exit status — sessions.json state can be stale
+                acp_actually_running = acp_state in ("running", "pending")
+                if acp_session_id and acp_actually_running:
+                    acpx_file = Path.home() / ".acpx" / "sessions" / f"{acp_session_id}.json"
+                    try:
+                        with open(acpx_file) as f:
+                            acpx_data = json.load(f)
+                        if acpx_data.get("last_agent_exit_at"):
+                            acp_actually_running = False
+                    except Exception:
+                        pass
+
                 session_obj.update({
                     "acp_state": acp_state,
                     "acp_identity_state": acp_identity_state,
@@ -1659,7 +1698,7 @@ def load_all_sessions() -> list[dict]:
                     "acp_session_id": acp_session_id,
                 })
                 # For ACP sessions without files, mark as processing if state is running/pending
-                if not has_file and acp_state in ("running", "pending"):
+                if not has_file and acp_actually_running:
                     is_processing = True
                     session_obj["is_processing"] = is_processing
 
@@ -1691,6 +1730,23 @@ def get_acp_session_info(acp_session_id: str) -> dict:
     pid = acp_data.get("pid")
     cumulative_token_usage = acp_data.get("cumulative_token_usage", {})
 
+    # If the agent has exited, it is no longer running regardless of pid
+    agent_exited = bool(last_agent_exit_at)
+    if agent_exited:
+        pid = None
+
+    # Check if last content block was an error
+    last_is_error = False
+    messages = acp_data.get("messages", [])
+    for msg in reversed(messages):
+        if "Agent" in msg:
+            content = msg["Agent"].get("content", [])
+            for block in reversed(content):
+                if isinstance(block, dict) and "ToolResult" in block:
+                    last_is_error = block["ToolResult"].get("is_error", False)
+                    break
+            break
+
     # Calculate time since last activity
     last_activity = last_used_at or last_prompt_at or updated_at
     now = datetime.now(timezone.utc).isoformat() + "Z"
@@ -1710,10 +1766,13 @@ def get_acp_session_info(acp_session_id: str) -> dict:
         "acp_session_id": acp_session_id,
         "closed": closed,
         "pid": pid,
+        "agent_exited": agent_exited,
+        "last_is_error": last_is_error,
         "last_used_at": last_used_at,
         "last_prompt_at": last_prompt_at,
         "last_agent_exit_at": last_agent_exit_at,
         "updated_at": updated_at,
+        "last_activity": last_activity,
         "last_activity_elapsed": elapsed_str,
         "cumulative_token_usage": cumulative_token_usage,
     }
@@ -1754,44 +1813,83 @@ def load_acp_session_messages(acp_session_id: str) -> list[dict]:
     result = []
 
     for i, msg in enumerate(messages):
-        # Determine role and extract readable content
-        role = "assistant"
-        content_text = ""
-
         if "User" in msg:
-            role = "user"
             user_data = msg["User"]
             content_list = user_data.get("content", [])
-            for content_item in content_list:
-                if isinstance(content_item, dict):
-                    if "Text" in content_item:
-                        content_text = content_item["Text"]
-                        break
+            text = ""
+            for item in content_list:
+                if isinstance(item, dict) and "Text" in item:
+                    text = item["Text"]
+                    break
+            result.append({
+                "id": f"acp-{i}",
+                "role": "user",
+                "text": text or "(no content)",
+                "blocks": [{"kind": "text", "text": text}] if text else [],
+                "ts_iso": "", "ts_fmt": "", "model": "", "stop_reason": "",
+                "input_tok": 0, "output_tok": 0, "has_metadata": False,
+                "source_channel": "direct", "source_label": "", "source_id": "",
+                "provenance_kind": "", "provenance_source_session_key": "",
+                "provenance_source_channel": "", "provenance_source_tool": "",
+                "error_message": "",
+                "raw_json": json.dumps(msg, ensure_ascii=False),
+            })
+
         elif "Agent" in msg:
-            role = "assistant"
             agent_data = msg["Agent"]
             content_list = agent_data.get("content", [])
-            # Extract text from Thinking or Text blocks
-            text_parts = []
-            for content_item in content_list:
-                if isinstance(content_item, dict):
-                    if "Thinking" in content_item:
-                        thinking = content_item["Thinking"].get("text", "")
-                        if thinking:
-                            text_parts.append(f"💭 {thinking[:200]}")
-                    elif "Text" in content_item:
-                        text_parts.append(content_item["Text"])
-            content_text = "\n".join(text_parts)
+            blocks = []
+            plain_parts = []
+            stop_reason = "end_turn"
 
-        result.append({
-            "role": role,
-            "text": content_text or "(no content)",
-            "ts_iso": "",
-            "model": "acp",
-            "id": f"acp-{i}",
-            "input_tok": 0,
-            "output_tok": 0,
-        })
+            for item in content_list:
+                if not isinstance(item, dict):
+                    continue
+                if "Thinking" in item:
+                    t = item["Thinking"].get("text", "")
+                    has_sig = bool(item["Thinking"].get("signature"))
+                    blocks.append({"kind": "thinking", "text": t, "encrypted": has_sig})
+                elif "Text" in item:
+                    t = item["Text"]
+                    blocks.append({"kind": "text", "text": t})
+                    plain_parts.append(t)
+                elif "ToolUse" in item:
+                    tu = item["ToolUse"]
+                    name = tu.get("name", "?")
+                    inp = tu.get("input", {})
+                    args_str = json.dumps(inp, ensure_ascii=False, indent=2) if isinstance(inp, dict) else str(inp)
+                    blocks.append({"kind": "toolCall", "name": name, "args": args_str})
+                elif "ToolResult" in item:
+                    tr = item["ToolResult"]
+                    is_error = tr.get("is_error", False)
+                    content = tr.get("content", {})
+                    if isinstance(content, dict) and "Text" in content:
+                        preview = content["Text"][:300]
+                    elif isinstance(content, str):
+                        preview = content[:300]
+                    else:
+                        preview = ""
+                    if is_error:
+                        stop_reason = "error"
+                    blocks.append({"kind": "toolResult", "name": "?",
+                                   "text": preview, "text_full": preview,
+                                   "total_chars": len(preview), "is_error": is_error})
+
+            text = " ".join(plain_parts).strip() or "(no text output)"
+            result.append({
+                "id": f"acp-{i}",
+                "role": "assistant",
+                "text": text,
+                "blocks": blocks,
+                "ts_iso": "", "ts_fmt": "", "model": "acp",
+                "stop_reason": stop_reason,
+                "input_tok": 0, "output_tok": 0, "has_metadata": False,
+                "source_channel": "unknown", "source_label": "", "source_id": "",
+                "provenance_kind": "", "provenance_source_session_key": "",
+                "provenance_source_channel": "", "provenance_source_tool": "",
+                "error_message": "",
+                "raw_json": json.dumps(msg, ensure_ascii=False),
+            })
 
     return result
 

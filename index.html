@@ -2226,28 +2226,31 @@ function renderDetailHeader(s) {
 function renderAcpDetailStats(s) {
   const stats = document.getElementById('detail-stats');
   stats.style.display = 'flex';
-  // For ACP sessions, fetch and display live status
-  stats.innerHTML = `
-    <div class="stat-item">
-      <div class="stat-label">Status</div>
-      <div class="stat-value" id="acp-status-badge">🟡 Loading…</div>
-    </div>
-    <div class="stat-item">
-      <div class="stat-label">Last Activity</div>
-      <div class="stat-value" id="acp-last-activity">—</div>
-    </div>
-    <div class="stat-item">
-      <div class="stat-label">Input Tokens</div>
-      <div class="stat-value" id="acp-input-tokens">—</div>
-    </div>
-    <div class="stat-item">
-      <div class="stat-label">Session ID</div>
-      <div class="stat-value" style="font-size:10px;font-family:monospace;display:flex;align-items:center;gap:4px">
-        <span title="${esc(s.session_id)}" style="user-select:none">${esc(s.session_id.slice(0,8))}&hellip;</span>
-        <button class="copy-btn" style="font-size:12px;padding:0 3px" onclick="copyMsgId('${esc(s.session_id)}',this)" title="Copy session ID">⧉</button>
+  // Only rebuild HTML when switching to a different session to avoid flicker on refresh
+  if (stats.dataset.acpSession !== s.session_id || !document.getElementById('acp-status-badge')) {
+    stats.dataset.acpSession = s.session_id;
+    stats.innerHTML = `
+      <div class="stat-item">
+        <div class="stat-label">Status</div>
+        <div class="stat-value" id="acp-status-badge">🟡 Loading…</div>
       </div>
-    </div>
-  `;
+      <div class="stat-item">
+        <div class="stat-label">Last Activity</div>
+        <div class="stat-value" id="acp-last-activity">—</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Input Tokens</div>
+        <div class="stat-value" id="acp-input-tokens">—</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Session ID</div>
+        <div class="stat-value" style="font-size:10px;font-family:monospace;display:flex;align-items:center;gap:4px">
+          <span title="${esc(s.session_id)}" style="user-select:none">${esc(s.session_id.slice(0,8))}&hellip;</span>
+          <button class="copy-btn" style="font-size:12px;padding:0 3px" onclick="copyMsgId('${esc(s.session_id)}',this)" title="Copy session ID">⧉</button>
+        </div>
+      </div>
+    `;
+  }
   // Fetch ACP info and update display
   loadAcpDetailStats(s.session_id);
 }
@@ -2259,8 +2262,31 @@ async function loadAcpDetailStats(sessionId) {
 
     if (data.error) return;
 
-    const status = data.closed ? '🛑 Closed' : (data.pid ? `🟢 Running` : '⏸️ Idle');
-    const elapsed = data.last_activity_elapsed || '—';
+    let status;
+    if (data.closed) {
+      status = '🛑 Closed';
+    } else if (data.agent_exited && data.last_is_error) {
+      status = '✗ Error';
+    } else if (data.agent_exited) {
+      status = '✓ Done';
+    } else if (data.pid) {
+      status = '🟢 Running';
+    } else {
+      status = '⏸️ Idle';
+    }
+
+    // Format last activity as timestamp (DD.MM.YYYY HH:MM)
+    let timestamp = '—';
+    if (data.last_activity) {
+      const date = new Date(data.last_activity);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      timestamp = `${day}.${month}.${year} ${hours}:${minutes}`;
+    }
+
     const tokens = (data.cumulative_token_usage?.inputTokens || 0).toLocaleString();
 
     const statusEl = document.getElementById('acp-status-badge');
@@ -2268,7 +2294,7 @@ async function loadAcpDetailStats(sessionId) {
     const tokensEl = document.getElementById('acp-input-tokens');
 
     if (statusEl) statusEl.textContent = status;
-    if (activityEl) activityEl.textContent = elapsed;
+    if (activityEl) activityEl.textContent = timestamp;
     if (tokensEl) tokensEl.textContent = tokens;
   } catch (e) {
     // Silent fail
@@ -2282,8 +2308,11 @@ function renderDetailStats(s) {
     return;
   }
 
-  const timeAgo = fmtTimeAgo(getSessionActivityMs(s)) || s.time_ago || '—';
+  // Clear ACP session marker so switching back to ACP later triggers a rebuild
   const stats = document.getElementById('detail-stats');
+  delete stats.dataset.acpSession;
+
+  const timeAgo = fmtTimeAgo(getSessionActivityMs(s)) || s.time_ago || '—';
   stats.style.display = 'flex';
   stats.innerHTML = `
     <div class="stat-item">
