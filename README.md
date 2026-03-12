@@ -25,6 +25,9 @@ Dark mode is the default. An optional light mode is available for brighter envir
 - Session list with status indicators (active / stopped / stale)
 - Top bar branding: `OpenClaw Session Watcher` + live green status dot
 - Subtle footer meta line with session count and last refresh time
+- **Full qualified model names** with provider in session list and message headers (e.g., `openai/gpt-4-turbo`)
+- **Gateway message distinction**: Gateway-injected messages labeled clearly as "gateway" without model attribution
+- **Enhanced Cron sessions**: Shortened cron ID (with copy button), next run countdown, and last run status/duration
 - Per-session message stream with structured rendering:
   - WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
   - Dedicated right-aligned **Inter-session cards** for `provenance.kind=inter_session` payloads (not rendered as normal user chat bubbles)
@@ -86,6 +89,18 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - shows source session/channel/tool metadata in-header
   - includes message ID copy + raw JSON actions like other message types
   - truncates long payloads with inline **(show all)** expansion
+
+## Release 1.4 Highlights
+
+- **Full qualified model names**: Display now shows full qualified model names with provider (e.g., `openai/gpt-4-turbo`, `anthropic/claude-opus-4`) instead of just the model name. Backend extracts provider from message metadata and displays in session list and message headers when available.
+- **Gateway message handling**: `gateway-injected` metadata is no longer misrepresented as a model name. Gateway-injected messages now display as "gateway" in the role label with no model attribution, providing clearer visibility into message routing.
+- **Session count accuracy**: Fixed footer session count to match displayed session list (filtered to sessions with messages or currently selected).
+- **Enhanced cron session display**:
+  - Cron job IDs shown shortened (first 8 chars) with copy button in session list, matching message ID display style
+  - Next scheduled run time displayed as countdown format (`2h`, `30m`, `45s`)
+  - Last run status and duration shown inline (e.g., `◆ success 2.5s`)
+  - Metadata sourced from `jobs.json` state tracking for real-time visibility into cron execution
+- **CSS refinements**: Increased model name display width (140px → 250px) and character truncation (22 → 100 chars) to accommodate longer qualified names.
 
 ---
 

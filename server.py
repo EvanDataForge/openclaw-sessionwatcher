@@ -350,6 +350,30 @@ def friendly_model(raw: str) -> str:
             raw = raw[len(prefix):]
     return raw
 
+def _get_full_model_name(model: str, provider: str = "") -> str:
+    """Return full qualified model name considering provider.
+
+    Logic:
+    - If model already contains '/', it's already qualified (e.g. openrouter/auto) → use as-is
+    - If model doesn't contain '/' but provider is available → return provider/model
+    - Otherwise → return model as-is
+    """
+    raw_model = str(model or "").strip()
+    raw_provider = str(provider or "").strip()
+
+    if not raw_model:
+        return ""
+
+    # Already qualified with provider
+    if "/" in raw_model:
+        return raw_model
+
+    # Add provider if available
+    if raw_provider:
+        return f"{raw_provider}/{raw_model}"
+
+    return raw_model
+
 def session_type(key: str, val: dict | None = None) -> str:
     # Key semantics are the most stable source. Keep channel identity anchored
     # to the session key so transient lastChannel/origin updates do not relabel
@@ -502,6 +526,45 @@ def load_cron_name_map() -> dict[str, str]:
             jname = str(job.get("name", "")).strip()
             if jid and jname and jid not in mapping:
                 mapping[jid] = jname
+    except Exception:
+        pass
+
+    return mapping
+
+def load_cron_state_map() -> dict[str, dict]:
+    """Build mapping cron_id -> state dict from OpenClaw cron config files."""
+    mapping: dict[str, dict] = {}
+
+    jobs_path = OPENCLAW_DIR / "cron" / "jobs.json"
+    try:
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
+        for job in _iter_job_dicts(data):
+            jid = str(job.get("id", "")).strip()
+            state = job.get("state", {})
+            if jid and isinstance(state, dict):
+                mapping[jid] = {
+                    "nextRunAtMs": state.get("nextRunAtMs", 0),
+                    "lastRunAtMs": state.get("lastRunAtMs", 0),
+                    "lastRunStatus": str(state.get("lastRunStatus", "")).strip(),
+                    "lastDurationMs": state.get("lastDurationMs", 0),
+                }
+    except Exception:
+        pass
+
+    openclaw_path = OPENCLAW_DIR / "openclaw.json"
+    try:
+        data = json_loads_lenient(openclaw_path.read_text(encoding="utf-8"))
+        cron_cfg = data.get("cron") if isinstance(data, dict) else None
+        for job in _iter_job_dicts(cron_cfg):
+            jid = str(job.get("id", "")).strip()
+            state = job.get("state", {})
+            if jid and isinstance(state, dict) and jid not in mapping:
+                mapping[jid] = {
+                    "nextRunAtMs": state.get("nextRunAtMs", 0),
+                    "lastRunAtMs": state.get("lastRunAtMs", 0),
+                    "lastRunStatus": str(state.get("lastRunStatus", "")).strip(),
+                    "lastDurationMs": state.get("lastDurationMs", 0),
+                }
     except Exception:
         pass
 
@@ -1203,6 +1266,7 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             "ts_iso":       entry.get("timestamp", ""),
             "ts_fmt":       fmt_iso(entry.get("timestamp", "")),
             "model":        friendly_model(msg.get("model", "")),
+            "full_model":   _get_full_model_name(msg.get("model", ""), msg.get("provider", "")),
             "stop_reason":  msg.get("stopReason", msg.get("stop_reason", "")),
             "error_message": error_message,
             "input_tok":    usage.get("input", 0),
@@ -1393,6 +1457,7 @@ def load_all_sessions() -> list[dict]:
     sessions = []
     cron_name_map = load_cron_name_map()
     cron_sessionkey_map = load_cron_sessionkey_map()
+    cron_state_map = load_cron_state_map()
 
     for agent_dir in sorted(AGENTS_DIR.iterdir()):
         if not agent_dir.is_dir():
@@ -1424,6 +1489,7 @@ def load_all_sessions() -> list[dict]:
             # Count messages & get stats
             msg_count   = 0
             last_model  = ""
+            last_full_model = ""
             total_input = 0
             total_output= 0
             last_ts_iso = ""
@@ -1439,6 +1505,7 @@ def load_all_sessions() -> list[dict]:
                 for m in reversed(real_msgs):
                     if m["role"] == "assistant" and m["model"] and m["model"] != "—":
                         last_model = m["model"]
+                        last_full_model = m.get("full_model", m["model"])
                         break
                 for m in reversed(real_msgs):
                     if m["role"] == "assistant" and m.get("stop_reason"):
@@ -1518,7 +1585,7 @@ def load_all_sessions() -> list[dict]:
             else:
                 label = origin_label or (":".join(parts[2:]) if len(parts) > 2 else key)
 
-            sessions.append({
+            session_obj = {
                 "key":        key,
                 "agent":      agent_dir.name,
                 "session_id": session_id,
@@ -1533,6 +1600,7 @@ def load_all_sessions() -> list[dict]:
                 "last_channel":  val.get("lastChannel", ""),
                 "session_key": cron_sessionkey_map.get(cron_id, key) if cron_id else key,
                 "model":      last_model or friendly_model(val.get("model", "")),
+                "full_model": last_full_model or _get_full_model_name(val.get("model", ""), val.get("provider", "")),
                 "context_pct":val.get("contextPct", 0),
                 "msg_count":  msg_count,
                 "total_cost": 0.0,
@@ -1542,7 +1610,19 @@ def load_all_sessions() -> list[dict]:
                 "last_ts_fmt": fmt_iso(last_ts_iso) if last_ts_iso else "",
                 "last_stop_reason": last_stop_reason,
                 "has_file":   has_file,
-            })
+            }
+
+            # Add cron state fields if this is a cron session
+            if stype == "cron" and cron_id in cron_state_map:
+                cron_state = cron_state_map[cron_id]
+                session_obj.update({
+                    "cron_next_run_ms": cron_state.get("nextRunAtMs", 0),
+                    "cron_last_run_ms": cron_state.get("lastRunAtMs", 0),
+                    "cron_last_status": cron_state.get("lastRunStatus", ""),
+                    "cron_duration_ms": cron_state.get("lastDurationMs", 0),
+                })
+
+            sessions.append(session_obj)
 
     sessions.sort(key=lambda s: s["updated_at"], reverse=True)
     return sessions

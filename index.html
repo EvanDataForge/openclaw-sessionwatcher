@@ -298,6 +298,19 @@
     text-overflow: ellipsis;
   }
 
+  .card-cron-meta {
+    font-size: 9px;
+    line-height: 1.3;
+    color: var(--muted);
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .card-cron-id { font-family: monospace; color: var(--muted); font-weight: 500; }
+  .card-cron-next { color: var(--type-cron); font-weight: 500; }
+  .card-cron-status { color: var(--amber-600); font-weight: 500; }
+
   .active-dot {
     width: 6px; height: 6px; border-radius: 50%;
     background: var(--green);
@@ -317,7 +330,7 @@
     color: var(--muted);
     align-items: center;
   }
-  .card-model { color: var(--accent); opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+  .card-model { color: var(--accent); opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px; }
   .card-sep { color: var(--border); }
   .card-time { white-space: nowrap; }
   .card-msgs { margin-left: auto; white-space: nowrap; }
@@ -1813,6 +1826,14 @@ function getAssistantErrorText(message) {
   return extractErrorMessageFromRaw(message?.raw_json || '');
 }
 
+function getModelDisplay(model) {
+  // Handle gateway-injected messages: don't display as a model
+  if (model === 'gateway-injected') {
+    return null;
+  }
+  return model;
+}
+
 function getMessageProvenance(message) {
   const fromPayload = {
     kind: String(message?.provenance_kind || '').trim(),
@@ -1959,6 +1980,20 @@ function fmtTimeAgo(ms) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+function formatCronTime(ms) {
+  if (!ms || ms <= 0) return '—';
+  const diff = Math.max(0, ms - Date.now());
+  if (diff < 0) return 'now';
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
 function getMessageKey(message, idx) {
   if (message?.id) return `id:${message.id}`;
   return `idx:${idx}|role:${message?.role || ''}|ts:${message?.ts_fmt || ''}|event:${message?.event_type || ''}`;
@@ -2067,13 +2102,36 @@ function renderSessionList() {
     }
     const unreadDot = State.unread.has(s.session_id) ? `<div class="unread-dot" title="New messages"></div>` : '';
     const typeClass = `type-${s.type}`;
-    const model = s.model && s.model !== '—' ? s.model : '';
-    const modelShort = model.length > 22 ? model.slice(0,22)+'…' : model;
+    const rawModel = (s.full_model || s.model) && (s.full_model || s.model) !== '—' && (s.full_model || s.model) !== 'gateway-injected' ? (s.full_model || s.model) : '';
+    const modelShort = rawModel.length > 100 ? rawModel.slice(0,100)+'…' : rawModel;
     const timeAgo = fmtTimeAgo(getSessionActivityMs(s)) || s.time_ago || '—';
-    const hasSubLabel = Boolean((s.label_sub || '').trim());
-    const labelHtml = hasSubLabel
-      ? `<span class="card-label-wrap"><span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span><span class="card-sub-label" title="${esc(s.label_sub)}">${esc(s.label_sub)}</span></span>`
-      : `<span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span>`;
+
+    let labelHtml = '';
+    if (s.type === 'cron') {
+      // For cron sessions, show ID with copy button + metadata
+      const cronIdShort = (s.cron_id || '').slice(0, 8) + '…';
+      const nextRunMs = s.cron_next_run_ms || 0;
+      const nextRunTime = nextRunMs ? new Date(nextRunMs).toLocaleString() : '—';
+      const lastStatus = s.cron_last_status || '—';
+      const duration = s.cron_duration_ms ? `${(s.cron_duration_ms/1000).toFixed(1)}s` : '—';
+
+      labelHtml = `<span class="card-label-wrap">
+        <span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span>
+        <div class="card-cron-meta">
+          <span class="card-cron-id" title="${esc(s.cron_id)}">${esc(cronIdShort)}</span>
+          <button class="copy-btn" style="font-size:11px;padding:0 3px" onclick="copyMsgId('${esc(s.cron_id)}',this)" title="Copy cron ID">⧉</button>
+          <span class="card-sep">·</span>
+          <span class="card-cron-next" title="Next run: ${esc(nextRunTime)}">Next: ${formatCronTime(nextRunMs)}</span>
+          <span class="card-sep">·</span>
+          <span class="card-cron-status" title="Last: ${esc(lastStatus)}, Duration: ${esc(duration)}">◆ ${esc(lastStatus)} ${esc(duration)}</span>
+        </div>
+      </span>`;
+    } else {
+      const hasSubLabel = Boolean((s.label_sub || '').trim());
+      labelHtml = hasSubLabel
+        ? `<span class="card-label-wrap"><span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span><span class="card-sub-label" title="${esc(s.label_sub)}">${esc(s.label_sub)}</span></span>`
+        : `<span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span>`;
+    }
 
     return `<div class="session-card${selected}${unread}" data-id="${esc(s.session_id)}" onclick="App.selectSession('${esc(s.session_id)}')">
       <div class="card-row1">
@@ -2082,7 +2140,7 @@ function renderSessionList() {
         ${statusDot}${unreadDot}
       </div>
       <div class="card-row2">
-        ${modelShort ? `<span class="card-model" title="${esc(model)}">${esc(modelShort)}</span><span class="card-sep">·</span>` : ''}
+        ${modelShort ? `<span class="card-model" title="${esc(rawModel)}">${esc(modelShort)}</span><span class="card-sep">·</span>` : ''}
         <span class="card-time">${esc(timeAgo)}</span>
         <span class="card-msgs">${s.msg_count ? `${s.msg_count} msgs` : '—'}</span>
       </div>
@@ -2133,7 +2191,7 @@ function renderDetailStats(s) {
     </div>
     <div class="stat-item">
       <div class="stat-label">Model</div>
-      <div class="stat-value" style="font-size:11px">${esc(s.model || '—')}</div>
+      <div class="stat-value" style="font-size:11px">${esc(getModelDisplay(s.full_model || s.model) || '—')}</div>
     </div>
     <div class="stat-item">
       <div class="stat-label">Session ID</div>
@@ -2378,8 +2436,16 @@ function renderMessages(messages, transitions = {}) {
 
     let roleLabel = m.role;
     if (isToolResult) roleLabel = `result:${m.tool_name}`;
-    const modelInfo = !isToolResult && m.model && m.model !== '—'
-      ? `<span class="msg-model">${esc(m.model)}</span>` : '';
+
+    // Handle gateway-injected messages: show as "gateway" rather than "assistant"
+    let displayModel = m.full_model || m.model;
+    if (!isToolResult && m.model === 'gateway-injected') {
+      roleLabel = 'gateway';
+      displayModel = null; // Don't show a separate model badge for gateway
+    }
+
+    const modelInfo = !isToolResult && displayModel && displayModel !== '—'
+      ? `<span class="msg-model">${esc(displayModel)}</span>` : '';
     
     // Determine status from details field
     const toolStatus = isToolResult ? getToolResultStatus(m.details) : { type: 'neutral', label: '' };
@@ -2629,11 +2695,21 @@ const App = {
         });
       }
 
-      document.getElementById('hdr-count').textContent = data.count ?? 0;
       document.getElementById('hdr-time').textContent  = (data.generated_fmt || '—') + ' ↻';
       document.getElementById('window-label').textContent = `last ${data.active_window_h}h`;
 
       renderSessionList();
+
+      // Update header count with filtered sessions (only those with msg_count > 0 or selected)
+      const selectedSession = State.sessions.find(s => s.session_id === State.selectedId);
+      const displayedSessions = (State.filter === 'all'
+        ? State.sessions
+        : State.sessions.filter(s => s.type === State.filter)
+      ).filter(s => {
+        if ((s.msg_count || 0) > 0) return true;
+        return !!(selectedSession && s.session_id === selectedSession.session_id);
+      });
+      document.getElementById('hdr-count').textContent = displayedSessions.length;
 
       // If a session was selected, refresh its messages too
       if (trackedSession) {
