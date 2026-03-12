@@ -22,12 +22,14 @@ Dark mode is the default. An optional light mode is available for brighter envir
 **Features:**
 
 - Built-in light mode and dark mode for the full UI
-- Session list with status indicators (active / stopped / stale)
+- Session list with status indicators (active / stopped / stale / processing)
 - Top bar branding: `OpenClaw Session Watcher` + live green status dot
 - Subtle footer meta line with session count and last refresh time
 - **Full qualified model names** with provider in session list and message headers (e.g., `openai/gpt-4-turbo`)
 - **Gateway message distinction**: Gateway-injected messages labeled clearly as "gateway" without model attribution
 - **Enhanced Cron sessions**: Shortened cron ID (with copy button), next run countdown, and last run status/duration
+- **ACP (Subagent) Sessions**: Real-time monitoring of autonomous agent runs with status indicators, processing animations, and acpx backend message loading
+- **Processing Indicators**: Green pulsing dot and typing animation when agents are actively working
 - Per-session message stream with structured rendering:
   - WhatsApp-style chat bubbles — user messages right-aligned, assistant left-aligned
   - Dedicated right-aligned **Inter-session cards** for `provenance.kind=inter_session` payloads (not rendered as normal user chat bubbles)
@@ -101,6 +103,38 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - Last run status and duration shown inline (e.g., `◆ success 2.5s`)
   - Metadata sourced from `jobs.json` state tracking for real-time visibility into cron execution
 - **CSS refinements**: Increased model name display width (140px → 250px) and character truncation (22 → 100 chars) to accommodate longer qualified names.
+
+## Release 1.5 Highlights
+
+- **ACP (Autonomous Code Pragma) Session Support**:
+  - New "ACP" session type with magenta badge for subagent spawns
+  - Displays ACP subagent activity in session list with unique status indicator
+  - Messages loaded from acpx backend (`.acpx/sessions/{id}.json`) when JSONL unavailable
+  - Support for both User and Agent message types from acpx format
+
+- **Live Processing Indicators**:
+  - Green pulsing status dot for active agent processing (detected via lock files)
+  - Typing animation in chat window when OpenClaw is working (`✏️ OpenClaw is processing…`)
+  - Distinguishes between idle, active, and stopped sessions at a glance
+
+- **ACP Status Header**:
+  - For ACP sessions, replaces standard stats with live ACP-specific panel
+  - Shows: Status (🟢 Running / 🛑 Closed / ⏸ Idle), Last Activity countdown, Input Tokens, Session ID
+  - Real-time polling ensures visibility into long-running autonomous tasks
+
+- **Unified Telegram Filter**:
+  - Combined "TG Group" and "Telegram" filters into single "Telegram" toggle
+  - Shows both direct messages and group conversations under one filter
+
+- **ACP Messages Display**:
+  - Thinking blocks (💭) with truncated previews for assistant thinking
+  - Tool calls and results from acpx session streams
+  - Support for multipart Agent content with thinking/text/tool-use mixing
+
+- **Enhanced Session Detection**:
+  - Automatically identifies ACP sessions from `acp` metadata in sessions.json
+  - Maps OpenClaw session IDs to acpx runtime IDs for cross-system correlation
+  - Handles ACP "pending" identity states during agent startup
 
 ---
 
@@ -258,11 +292,25 @@ Control commands via `start.sh`:
   sessions.json       ← session metadata (label, timestamps, model, …)
   <session-id>.jsonl  ← message log (one JSON object per line; resolver can merge alias files)
           │
+          ├─→ (for JSONL-backed sessions)
+          │
           ▼
-    server.py
+
+~/.acpx/sessions/
+  <acpx-id>.json      ← ACP/acpx session state (for ACP-type sessions)
+  <acpx-id>.stream.ndjson ← ACP event stream
+          │
+          └─→ (for ACP sessions)
+
+          └─┬─────────────────────┘
+            │
+            ▼
+      server.py
   ┌─────────────────────────────┐
   │  load_all_sessions()        │  reads sessions.json + tail of each JSONL
   │  resolve_session_jsonl_paths() │ resolves canonical + alias JSONL paths
+  │  find_acp_session_id()      │  maps OpenClaw → acpx session IDs
+  │  load_acp_session_messages()│  loads messages from acpx backend
   │  _merge_session_entries()   │ merges/de-dupes entries across alias files
   │  parse_messages()           │  structures raw entries into display records
   │  _tool_result_preview()     │  trims large tool results to 300 chars
@@ -272,13 +320,15 @@ Control commands via `start.sh`:
   │  classify_user_source()     │  marks user message source as direct/telegram
   │  strip_markers()            │  removes [[...]] markers from text
   │  load_gateway_config()      │  reads gateway settings from openclaw.json
+  │  get_acp_session_info()     │  fetches live ACP status from .acpx
   └────────────┬────────────────┘
                │  JSON API
                ▼
     index.html (single-file frontend)
   ┌─────────────────────────────┐
-  │  GET /api/sessions          │  session list with stats
-  │  GET /api/sessions/:id/messages            │  full message stream for one session
+  │  GET /api/sessions          │  session list with stats + ACP indicators
+  │  GET /api/sessions/:id/messages            │  full message stream (JSONL or ACP)
+  │  GET /api/sessions/:id/acp-info            │  ACP session live status
   │  GET /api/sessions/:id/events              │  SSE stream for live file change notifications
   │  GET /api/sessions/:id/entry/:eid/full     │  full text of one entry (on demand)
   │  GET /api/config/gateway                   │  gateway availability/config (token redacted)
@@ -291,13 +341,16 @@ Control commands via `start.sh`:
 
 Sessions are loaded from all agents under `$OPENCLAW_DIR/agents/`. Only sessions updated within the last 24 hours are shown (configurable via `ACTIVE_WINDOW_H` in `server.py`). The status dot colour follows this priority:
 
-| Condition | Dot |
-|---|---|
-| Recent (< 10 min) + stopped | 🔴 Red |
-| Recent (< 10 min) + no stop | 🟢 Green, blinking |
-| Older (> 10 min) | 🟤 Dark red |
+| Condition | Dot | Behavior |
+|---|---|---|
+| Processing (lock file exists) | 🟢 Green, fast pulse | Agent actively working |
+| Recent (< 10 min) + stopped | 🔴 Red | Session finished, still fresh |
+| Recent (< 10 min) + no stop | 🟢 Green, slow pulse | Session active, no explicit stop |
+| Older (> 10 min) | 🟤 Dark red | Stale, no recent activity |
 
-"Last activity" in the UI is based on the last visible JSONL message timestamp (`last_ts_iso`) when available, and only falls back to `sessions.json.updatedAt` otherwise.
+ACP sessions display their own status in the detail header (Running/Closed/Idle) with real-time polling of `.acpx/sessions/{id}.json` state.
+
+"Last activity" in the UI is based on the last visible JSONL message timestamp (`last_ts_iso`) when available, and only falls back to `sessions.json.updatedAt` otherwise. For ACP sessions, last activity comes from `last_used_at` field in the acpx backend.
 
 ### Message parsing
 
@@ -313,6 +366,16 @@ Each JSONL entry is classified by its `type` field:
 | `custom` (`model-snapshot`) | ⚡ Event marker (`model snapshot …`) |
 | `custom` (other) | ⚡ Event marker (`custom:<type> …`) |
 | unknown non-`message` type | ⚡ Event marker (`entry:<type> …`) |
+
+ACP sessions load messages from the acpx backend (`.acpx/sessions/{id}.json`):
+
+| ACP Message type | Rendered as |
+|---|---|
+| `User` message | User bubble (identical to JSONL format) |
+| `Agent` message | Assistant bubble with content blocks |
+|   - `Thinking` block | Collapsible thinking block with `💭` prefix |
+|   - `Text` block | Normal text content |
+|   - `ToolUse` block | Tool call with formatted arguments |
 
 Unknown `message.role` values are rendered as `meta` event markers with a short content preview instead of being silently dropped.
 
@@ -348,6 +411,33 @@ Or manually:
 launchctl bootout gui/$(id -u)/com.openclaw.sessionwatcher
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.openclaw.sessionwatcher.plist
 ```
+
+### ACP (Subagent) Permissions
+
+If you deploy ACP subagents that need to execute commands (bash, git, gh, etc.), configure the ACP permission mode in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "expectedVersion": "any",
+          "permissionMode": "approve-all"
+        }
+      }
+    }
+  }
+}
+```
+
+Available permission modes:
+- `"approve-all"` — all tool calls auto-approved (agent can run bash, git, gh, etc.)
+- `"approve-reads"` — only read-safe operations auto-approved; write/delete operations require user approval (default)
+- `"deny-all"` — all operations denied; user must explicitly approve each tool call
+
+When `permissionMode` is `"approve-reads"` or `"deny-all"`, the subagent may stall waiting for interactive approval. Use `"approve-all"` for truly autonomous agents.
 
 ### Frontend
 

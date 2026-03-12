@@ -380,6 +380,8 @@ def session_type(key: str, val: dict | None = None) -> str:
     # Telegram sessions as webchat/direct.
     if ":cron:" in key or key.startswith("cron:"):
         return "cron"
+    if ":acp:" in key or (val and val.get("acp")):
+        return "acp"
     if ":subagent:" in key or "subagent" in key:
         return "subagent"
     if ":telegram:group:" in key or key.startswith("telegram:group:"):
@@ -409,6 +411,7 @@ def type_label(t: str) -> str:
         "group":    "TG Group",
         "telegram": "Telegram",
         "cron":     "Cron",
+        "acp":      "ACP",
         "subagent": "Subagent",
         "main":     "Direct",
         "other":    "Other",
@@ -1575,6 +1578,8 @@ def load_all_sessions() -> list[dict]:
                 label = origin_dm_label or (f"DM {parts[-1]}" if parts else key)
             elif stype == "cron":
                 label = cron_name_map.get(cron_id, "") or origin_label or key
+            elif stype == "acp":
+                label = explicit_label or origin_label or key
             elif stype == "subagent":
                 label = explicit_label or origin_label or (parts[-1] if parts else key)
             elif stype == "main":
@@ -1584,6 +1589,15 @@ def load_all_sessions() -> list[dict]:
                     label = origin_label or "Direct"
             else:
                 label = origin_label or (":".join(parts[2:]) if len(parts) > 2 else key)
+
+            # Check for active processing (lock file existence)
+            is_processing = False
+            if has_file and jsonl_paths:
+                for jsonl_path in jsonl_paths:
+                    lock_path = jsonl_path.with_suffix(jsonl_path.suffix + '.lock')
+                    if lock_path.exists():
+                        is_processing = True
+                        break
 
             session_obj = {
                 "key":        key,
@@ -1610,6 +1624,7 @@ def load_all_sessions() -> list[dict]:
                 "last_ts_fmt": fmt_iso(last_ts_iso) if last_ts_iso else "",
                 "last_stop_reason": last_stop_reason,
                 "has_file":   has_file,
+                "is_processing": is_processing,
             }
 
             # Add cron state fields if this is a cron session
@@ -1622,21 +1637,173 @@ def load_all_sessions() -> list[dict]:
                     "cron_duration_ms": cron_state.get("lastDurationMs", 0),
                 })
 
+            # Add ACP state fields if this is an ACP session
+            if stype == "acp" and val.get("acp"):
+                acp_data = val.get("acp", {})
+                acp_state = acp_data.get("state", "unknown")
+                acp_identity = acp_data.get("identity", {})
+                acp_identity_state = acp_identity.get("state", "unknown")
+                acp_agent = acp_data.get("agent", "")
+                acp_session_id = acp_identity.get("acpxSessionId", "")
+                session_obj.update({
+                    "acp_state": acp_state,
+                    "acp_identity_state": acp_identity_state,
+                    "acp_agent": acp_agent,
+                    "acp_session_id": acp_session_id,
+                })
+                # For ACP sessions without files, mark as processing if state is running/pending
+                if not has_file and acp_state in ("running", "pending"):
+                    is_processing = True
+                    session_obj["is_processing"] = is_processing
+
             sessions.append(session_obj)
 
     sessions.sort(key=lambda s: s["updated_at"], reverse=True)
     return sessions
 
-def load_session_messages(session_id: str) -> list[dict]:
-    """Load recent messages for a specific session_id."""
-    paths = resolve_session_jsonl_paths(session_id)
-    if not paths:
+def get_acp_session_info(acp_session_id: str) -> dict:
+    """Get detailed info about an ACP session from .acpx/sessions."""
+    acpx_dir = Path.home() / ".acpx" / "sessions"
+    acp_file = acpx_dir / f"{acp_session_id}.json"
+
+    if not acp_file.exists():
+        return {"error": "ACP session file not found"}
+
+    try:
+        with open(acp_file) as f:
+            acp_data = json.load(f)
+    except Exception as e:
+        return {"error": f"Failed to load ACP session: {e}"}
+
+    # Extract key fields
+    last_used_at = acp_data.get("last_used_at", "")
+    last_prompt_at = acp_data.get("last_prompt_at", "")
+    last_agent_exit_at = acp_data.get("last_agent_exit_at", "")
+    updated_at = acp_data.get("updated_at", "")
+    closed = acp_data.get("closed", False)
+    pid = acp_data.get("pid")
+    cumulative_token_usage = acp_data.get("cumulative_token_usage", {})
+
+    # Calculate time since last activity
+    last_activity = last_used_at or last_prompt_at or updated_at
+    now = datetime.now(timezone.utc).isoformat() + "Z"
+
+    try:
+        if last_activity:
+            last_activity_dt = datetime.fromisoformat(last_activity.replace("Z", "+00:00"))
+            now_dt = datetime.now(timezone.utc)
+            elapsed_ms = int((now_dt - last_activity_dt).total_seconds() * 1000)
+            elapsed_str = f"{elapsed_ms // 60000}m {(elapsed_ms % 60000) // 1000}s ago"
+        else:
+            elapsed_str = "unknown"
+    except Exception:
+        elapsed_str = "unknown"
+
+    return {
+        "acp_session_id": acp_session_id,
+        "closed": closed,
+        "pid": pid,
+        "last_used_at": last_used_at,
+        "last_prompt_at": last_prompt_at,
+        "last_agent_exit_at": last_agent_exit_at,
+        "updated_at": updated_at,
+        "last_activity_elapsed": elapsed_str,
+        "cumulative_token_usage": cumulative_token_usage,
+    }
+
+def find_acp_session_id(session_id: str) -> str | None:
+    """Find ACP session ID (acpxSessionId) for a given session_id."""
+    for agent_dir in sorted(AGENTS_DIR.iterdir()):
+        if not agent_dir.is_dir():
+            continue
+        store = load_sessions_store(agent_dir)
+        for key, val in store.items():
+            if ":run:" in key:
+                continue
+            store_sid = str(val.get("sessionId", "") or "").strip()
+            if store_sid == session_id:
+                acp_data = val.get("acp")
+                if acp_data:
+                    acp_session_id = acp_data.get("identity", {}).get("acpxSessionId", "")
+                    if acp_session_id:
+                        return acp_session_id
+    return None
+
+def load_acp_session_messages(acp_session_id: str) -> list[dict]:
+    """Load messages from an ACP session stored in .acpx/sessions."""
+    acpx_dir = Path.home() / ".acpx" / "sessions"
+    acp_file = acpx_dir / f"{acp_session_id}.json"
+
+    if not acp_file.exists():
         return []
 
-    merged_entries: list[dict] = []
-    for jsonl_path in paths:
-        merged_entries.extend(read_jsonl_full(jsonl_path))
-    return parse_messages(_merge_session_entries(merged_entries))
+    try:
+        with open(acp_file) as f:
+            acp_data = json.load(f)
+    except Exception:
+        return []
+
+    messages = acp_data.get("messages", [])
+    result = []
+
+    for i, msg in enumerate(messages):
+        # Determine role and extract readable content
+        role = "assistant"
+        content_text = ""
+
+        if "User" in msg:
+            role = "user"
+            user_data = msg["User"]
+            content_list = user_data.get("content", [])
+            for content_item in content_list:
+                if isinstance(content_item, dict):
+                    if "Text" in content_item:
+                        content_text = content_item["Text"]
+                        break
+        elif "Agent" in msg:
+            role = "assistant"
+            agent_data = msg["Agent"]
+            content_list = agent_data.get("content", [])
+            # Extract text from Thinking or Text blocks
+            text_parts = []
+            for content_item in content_list:
+                if isinstance(content_item, dict):
+                    if "Thinking" in content_item:
+                        thinking = content_item["Thinking"].get("text", "")
+                        if thinking:
+                            text_parts.append(f"💭 {thinking[:200]}")
+                    elif "Text" in content_item:
+                        text_parts.append(content_item["Text"])
+            content_text = "\n".join(text_parts)
+
+        result.append({
+            "role": role,
+            "text": content_text or "(no content)",
+            "ts_iso": "",
+            "model": "acp",
+            "id": f"acp-{i}",
+            "input_tok": 0,
+            "output_tok": 0,
+        })
+
+    return result
+
+def load_session_messages(session_id: str) -> list[dict]:
+    """Load recent messages for a specific session_id."""
+    # Try to load from JSONL first
+    paths = resolve_session_jsonl_paths(session_id)
+    if paths:
+        merged_entries: list[dict] = []
+        for jsonl_path in paths:
+            merged_entries.extend(read_jsonl_full(jsonl_path))
+        return parse_messages(_merge_session_entries(merged_entries))
+
+    # Fallback: try to load from ACP
+    acp_session_id = find_acp_session_id(session_id)
+    if acp_session_id:
+        return load_acp_session_messages(acp_session_id)
+
+    return []
 
 def find_session_jsonl_paths(session_id: str) -> list[Path]:
     """Resolve all JSONL aliases for a session_id."""
@@ -2170,6 +2337,20 @@ class Handler(BaseHTTPRequestHandler):
                 session_id = parts[3]
                 msgs = load_session_messages(session_id)
                 self.send_json({"messages": msgs, "count": len(msgs)})
+            else:
+                self.send_json({"error": "invalid path"}, 400)
+
+        elif path.startswith("/api/sessions/") and path.endswith("/acp-info"):
+            parts = path.split("/")
+            # /api/sessions/<id>/acp-info
+            if len(parts) == 5:
+                session_id = parts[3]
+                acp_session_id = find_acp_session_id(session_id)
+                if acp_session_id:
+                    info = get_acp_session_info(acp_session_id)
+                    self.send_json(info)
+                else:
+                    self.send_json({"error": "Not an ACP session"}, 404)
             else:
                 self.send_json({"error": "invalid path"}, 400)
 

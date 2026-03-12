@@ -28,6 +28,7 @@
     --type-group:    var(--teal);
     --type-telegram: var(--purple);
     --type-cron:     var(--yellow);
+    --type-acp:      #ff66ff;
     --type-subagent: var(--orange);
     --type-other:    var(--muted);
   }
@@ -276,6 +277,7 @@
   .type-telegram { background: rgba(166,123,255,.2); color: var(--type-telegram); }
   .type-cron     { background: rgba(250,204,21,.2);  color: var(--type-cron); }
   body.light .type-cron { color: #92400e; }
+  .type-acp      { background: rgba(255,102,255,.2); color: var(--type-acp); }
   .type-subagent { background: rgba(245,166,35,.2);  color: var(--type-subagent); }
   .type-other    { background: rgba(90,97,117,.2);   color: var(--type-other); }
 
@@ -320,8 +322,14 @@
 
   .ss-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
   .ss-dot.ss-active  { background: var(--green); animation: pulse 1.5s ease-in-out infinite; }
+  .ss-dot.ss-typing  { background: var(--green); animation: typing-pulse 0.8s ease-in-out infinite; }
   .ss-dot.ss-stopped { background: var(--red); }
   .ss-dot.ss-stale   { background: #6b2020; }
+
+  @keyframes typing-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.3; }
+  }
 
   .card-row2 {
     display: flex;
@@ -731,7 +739,46 @@
   .msg-event.ev-meta .ev-tag { color: var(--muted); border-color: rgba(90,97,117,.35); }
   .msg-event .ev-time { margin-left: 4px; font-size: 9px; opacity: 0.6; }
 
-  /* ── Raw modal ── */
+  /* ── Typing indicator ── */
+  .msg-typing {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    background: rgba(255,255,255,.03);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .typing-dots {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+  }
+
+  .typing-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: typing-dot 1.4s infinite;
+  }
+
+  .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes typing-dot {
+    0%, 60%, 100% { opacity: 0.3; }
+    30% { opacity: 1; }
+  }
+
+  body.light .msg-typing {
+    background: rgba(15,23,42,.04);
+    border-color: rgba(15,23,42,.10);
+  }
   #raw-modal {
     display: none;
     position: fixed;
@@ -1335,9 +1382,9 @@
     <div id="filter-bar">
       <button class="filter-btn active" data-type="all" onclick="App.setFilter('all',this)">All</button>
       <button class="filter-btn" data-type="main"     onclick="App.setFilter('main',this)">Direct</button>
-      <button class="filter-btn" data-type="group"    onclick="App.setFilter('group',this)">TG Group</button>
       <button class="filter-btn" data-type="telegram" onclick="App.setFilter('telegram',this)">Telegram</button>
       <button class="filter-btn" data-type="cron"     onclick="App.setFilter('cron',this)">Cron</button>
+      <button class="filter-btn" data-type="acp"      onclick="App.setFilter('acp',this)">ACP</button>
       <button class="filter-btn" data-type="subagent" onclick="App.setFilter('subagent',this)">Subagent</button>
     </div>
     <div id="session-list">
@@ -2065,11 +2112,16 @@ function renderSessionList() {
     ? State.sessions.find(s => s.session_id === State.selectedId) || findSessionByAnchor(State.selectedAnchor)
     : findSessionByAnchor(State.selectedAnchor);
 
-  const filtered = (State.filter === 'all'
-    ? State.sessions
-    : State.sessions.filter(s => s.type === State.filter)
+  const filtered = (
+    State.filter === 'all'
+      ? State.sessions
+      : State.filter === 'telegram'
+        ? State.sessions.filter(s => s.type === 'telegram' || s.type === 'group')
+        : State.sessions.filter(s => s.type === State.filter)
   ).filter(s => {
     if ((s.msg_count || 0) > 0) return true;
+    // Show ACP sessions even without messages if they're running/pending
+    if (s.type === 'acp' && ['running', 'pending'].includes(s.acp_state)) return true;
     return !!(selectedSession && s.session_id === selectedSession.session_id);
   });
 
@@ -2092,8 +2144,11 @@ function renderSessionList() {
     const lastStop = s.last_stop_reason || '';
     const recent   = isRecent(s);
     const stopped  = STOP_REASONS.has(lastStop);
+    const processing = s.is_processing || false;
     let statusDot = '';
-    if (recent && stopped) {
+    if (processing) {
+      statusDot = `<div class="ss-dot ss-typing" title="Processing…"></div>`;
+    } else if (recent && stopped) {
       statusDot = `<div class="ss-dot ss-stopped" title="Last stop: ${esc(lastStop)}"></div>`;
     } else if (recent && !stopped) {
       statusDot = `<div class="ss-dot ss-active" title="Active (last 10 min)"></div>`;
@@ -2168,7 +2223,65 @@ function renderDetailHeader(s) {
   }
 }
 
+function renderAcpDetailStats(s) {
+  const stats = document.getElementById('detail-stats');
+  stats.style.display = 'flex';
+  // For ACP sessions, fetch and display live status
+  stats.innerHTML = `
+    <div class="stat-item">
+      <div class="stat-label">Status</div>
+      <div class="stat-value" id="acp-status-badge">🟡 Loading…</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Last Activity</div>
+      <div class="stat-value" id="acp-last-activity">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Input Tokens</div>
+      <div class="stat-value" id="acp-input-tokens">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Session ID</div>
+      <div class="stat-value" style="font-size:10px;font-family:monospace;display:flex;align-items:center;gap:4px">
+        <span title="${esc(s.session_id)}" style="user-select:none">${esc(s.session_id.slice(0,8))}&hellip;</span>
+        <button class="copy-btn" style="font-size:12px;padding:0 3px" onclick="copyMsgId('${esc(s.session_id)}',this)" title="Copy session ID">⧉</button>
+      </div>
+    </div>
+  `;
+  // Fetch ACP info and update display
+  loadAcpDetailStats(s.session_id);
+}
+
+async function loadAcpDetailStats(sessionId) {
+  try {
+    const response = await fetch(`/api/sessions/${sessionId}/acp-info`);
+    const data = await response.json();
+
+    if (data.error) return;
+
+    const status = data.closed ? '🛑 Closed' : (data.pid ? `🟢 Running` : '⏸️ Idle');
+    const elapsed = data.last_activity_elapsed || '—';
+    const tokens = (data.cumulative_token_usage?.inputTokens || 0).toLocaleString();
+
+    const statusEl = document.getElementById('acp-status-badge');
+    const activityEl = document.getElementById('acp-last-activity');
+    const tokensEl = document.getElementById('acp-input-tokens');
+
+    if (statusEl) statusEl.textContent = status;
+    if (activityEl) activityEl.textContent = elapsed;
+    if (tokensEl) tokensEl.textContent = tokens;
+  } catch (e) {
+    // Silent fail
+  }
+}
+
 function renderDetailStats(s) {
+  // For ACP sessions, use special rendering
+  if (s.type === 'acp') {
+    renderAcpDetailStats(s);
+    return;
+  }
+
   const timeAgo = fmtTimeAgo(getSessionActivityMs(s)) || s.time_ago || '—';
   const stats = document.getElementById('detail-stats');
   stats.style.display = 'flex';
@@ -2544,6 +2657,17 @@ function renderMessages(messages, transitions = {}) {
     </div>`;
   }).join('');
 
+  // Add typing animation if session is processing
+  const currentSession = State.sessions.find(s => s.session_id === State.selectedId);
+  if (currentSession && currentSession.is_processing) {
+    el.innerHTML += `<div class="msg-typing">
+      <div class="typing-dots">
+        <span></span><span></span><span></span>
+      </div>
+      <span class="typing-text">OpenClaw is processing…</span>
+    </div>`;
+  }
+
   // Restore chat-only toggle state after re-render
   el.classList.toggle('chat-only', State.chatOnly);
   App._applyChatToggleBtn();
@@ -2702,11 +2826,16 @@ const App = {
 
       // Update header count with filtered sessions (only those with msg_count > 0 or selected)
       const selectedSession = State.sessions.find(s => s.session_id === State.selectedId);
-      const displayedSessions = (State.filter === 'all'
-        ? State.sessions
-        : State.sessions.filter(s => s.type === State.filter)
+      const displayedSessions = (
+        State.filter === 'all'
+          ? State.sessions
+          : State.filter === 'telegram'
+            ? State.sessions.filter(s => s.type === 'telegram' || s.type === 'group')
+            : State.sessions.filter(s => s.type === State.filter)
       ).filter(s => {
         if ((s.msg_count || 0) > 0) return true;
+        // Show ACP sessions even without messages if they're running/pending
+        if (s.type === 'acp' && ['running', 'pending'].includes(s.acp_state)) return true;
         return !!(selectedSession && s.session_id === selectedSession.session_id);
       });
       document.getElementById('hdr-count').textContent = displayedSessions.length;
