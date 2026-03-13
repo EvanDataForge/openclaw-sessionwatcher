@@ -136,6 +136,27 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - Maps OpenClaw session IDs to acpx runtime IDs for cross-system correlation
   - Handles ACP "pending" identity states during agent startup
 
+## Release 1.6 Highlights
+
+- **Cron next-run display stability**:
+  - Cron cards now show `Next: Running...` while a cron session is actively processing
+  - Past-due next-run timestamps no longer oscillate between `Running...` and `0s`
+  - Forced refresh for due cron entries is now time-bounded to avoid endless refresh loops
+
+- **Provider error context in assistant bubbles**:
+  - Empty assistant error turns now render a structured provider-error panel
+  - Shows the provider error text when available (for example `Provider returned error`)
+  - Adds immediate context by listing the last preceding tool call(s) and argument hints
+
+- **Voice message rendering for Telegram/media payloads**:
+  - User messages containing audio media markers now render as a dedicated voice-message bubble
+  - Includes compact play glyph + waveform visualization and optional cleaned caption text
+  - Removes noisy metadata/media envelope text from the primary bubble content
+
+- **Processing-state consistency refinements**:
+  - Session list status dot, cron `Running...` label, and typing indicator now share the same processing-state helper logic
+  - Reduces temporary state mismatches between detail view and session list during live updates
+
 ---
 
 ## Requirements
