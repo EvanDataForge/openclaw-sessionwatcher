@@ -157,13 +157,26 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - Session list status dot, cron `Running...` label, and typing indicator now share the same processing-state helper logic
   - Reduces temporary state mismatches between detail view and session list during live updates
 
+## Release 2026.3.13 Highlights
+
+**Requires OpenClaw ≥ 2026.3.12** — the gateway introduced scope-enforcement for clients without a signed device identity. Without a device signature, `clearUnboundScopes()` strips `operator.write` from the connection, causing `chat.send` to fail with `missing scope: operator.write`.
+
+- **Ed25519 Device Identity for Gateway chat** — Session Watcher now authenticates with a cryptographic device identity when connecting to the OpenClaw Gateway:
+  - On first start, a permanent Ed25519 key pair is generated at `~/.openclaw/sessionwatcher-device.json`
+  - The device is auto-registered in `~/.openclaw/devices/paired.json` with full operator scopes (incl. `operator.write`)
+  - The OpenClaw gateway daemon is restarted automatically if the device was newly registered
+  - Every connect signs the gateway-issued nonce with the private key (V3 payload); the gateway verifies and grants the declared scopes without clearing them
+  - Falls back gracefully to unsigned connects if the `cryptography` package is not available (chat send will be unavailable in that case)
+
+- **New dependency for chat send**: `pip install websocket-client cryptography` — `cryptography` is now required alongside `websocket-client` for gateway chat functionality.
+
 ---
 
 ## Requirements
 
-- Python 3.9 or newer (no third-party packages needed)
+- Python 3.9 or newer
 - An OpenClaw installation with agents writing sessions to `~/.openclaw/agents/`
-- Optional for chat send from the Session Watcher UI: `websocket-client` in the runtime interpreter
+- Optional for chat send from the Session Watcher UI: `websocket-client` and `cryptography` in the runtime interpreter
 
 ---
 
@@ -177,13 +190,13 @@ cd openclaw-sessionwatcher
 
 That's it. No `pip install`, no build step.
 
-If you want to send chat messages from the dashboard UI, install the optional package:
+If you want to send chat messages from the dashboard UI, install the optional packages:
 
 ```bash
-./../.venv/bin/python -m pip install websocket-client
+./../.venv/bin/python -m pip install websocket-client cryptography
 ```
 
-If you use a different interpreter for SessionWatcher, install `websocket-client` there instead.
+If you use a different interpreter for SessionWatcher, install both packages there instead.
 
 ### macOS LaunchAgent Setup (optional auto-start)
 
@@ -412,14 +425,14 @@ ToolResult entries also expose detail status (`ok/error/failed/running/accepted/
 
 ### Troubleshooting: `Gateway not connected` (HTTP 503)
 
-1. Verify the running interpreter can import `websocket` (`websocket-client` package).
+1. Verify the running interpreter can import `websocket` (`websocket-client` package) and `cryptography`.
 2. If using LaunchAgent auto-start, check the runtime program path in the plist:
 
 ```bash
 cat ~/Library/LaunchAgents/com.openclaw.sessionwatcher.plist | grep -A1 -B1 ProgramArguments
 ```
 
-3. Ensure the Python executable path points to the interpreter where `websocket-client` is installed.
+3. Ensure the Python executable path points to the interpreter where `websocket-client` and `cryptography` are installed.
 4. Reload the agent after making changes:
 
 ```bash
@@ -432,6 +445,34 @@ Or manually:
 launchctl bootout gui/$(id -u)/com.openclaw.sessionwatcher
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.openclaw.sessionwatcher.plist
 ```
+
+### Gateway Device Identity (chat send authentication)
+
+OpenClaw Gateway requires clients that declare privileged scopes (e.g. `operator.write` for `chat.send`) to authenticate with a signed Ed25519 device identity. Session Watcher handles this automatically **if** the `cryptography` Python package is installed in the active interpreter:
+
+1. **Key generation** — On first start, `server.py` generates an Ed25519 key pair and stores it at:
+   ```
+   ~/.openclaw/sessionwatcher-device.json
+   ```
+   This file contains the private key and must not be shared.
+
+2. **Device registration** — The device is registered in:
+   ```
+   ~/.openclaw/devices/paired.json
+   ```
+   with all operator scopes including `operator.write`. This happens automatically; no manual approval step is required.
+
+3. **Gateway restart** — If the device was newly registered, `server.py` restarts the OpenClaw gateway daemon so it picks up the new `paired.json` entry. This requires `node` to be on `$PATH` or at a standard Homebrew/system location.
+
+4. **Signed connect** — On every WebSocket connection to the gateway, `server.py` signs the server-issued nonce with the device private key (V3 payload). The gateway verifies the signature and grants the declared scopes without clearing them.
+
+**If `cryptography` is not installed**, the session watcher falls back to unsigned connects and the gateway will strip `operator.write` → chat send fails with `missing scope: operator.write`.
+
+**Nothing to do manually** — as long as `cryptography` is installed in the same interpreter, the device is generated and registered automatically on first start.
+
+> **Troubleshooting**: If you see `pairing required` in the logs, the most likely cause is a stale `paired.json` entry with the wrong platform. Delete the session watcher's entry from `~/.openclaw/devices/paired.json` (the key whose `"clientId"` is `"webchat-ui"` and `"clientMode"` is `"webchat"`) and restart Session Watcher — it will re-register with the correct platform automatically.
+
+---
 
 ### ACP (Subagent) Permissions
 

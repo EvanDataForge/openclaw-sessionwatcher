@@ -16,6 +16,8 @@ import threading
 import uuid
 import queue
 import hashlib
+import base64
+import subprocess
 try:
     import websocket  # type: ignore
 except ImportError:
@@ -662,6 +664,129 @@ def load_cron_sessionkey_map() -> dict[str, str]:
 
     return mapping
 
+# ── Device Identity (Ed25519) ─────────────────────────────────────────────────
+
+_DEVICE_IDENTITY_PATH = OPENCLAW_DIR / "sessionwatcher-device.json"
+_DEVICE_PAIRED_SCOPES = [
+    "operator.admin", "operator.write", "operator.read",
+    "operator.approvals", "operator.pairing",
+]
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey as _Ed25519Key
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding as _Enc, PublicFormat as _PubFmt,
+        PrivateFormat as _PrivFmt, NoEncryption as _NoEnc,
+        load_pem_private_key as _load_pem_priv,
+    )
+    _CRYPTO_OK = True
+except ImportError:
+    _CRYPTO_OK = False
+
+
+def _b64url_enc(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _make_device_v3_payload(device_id: str, token: str, nonce: str,
+                             signed_at_ms: int, scopes: list) -> str:
+    return "|".join([
+        "v3", device_id,
+        "webchat-ui", "webchat",        # clientId, clientMode
+        "operator",
+        ",".join(scopes),
+        str(signed_at_ms),
+        token or "",
+        nonce,
+        "web", "",                      # platform (= client.platform), deviceFamily
+    ])
+
+
+def _sign_device_payload(private_key_pem: str, payload: str) -> str:
+    key = _load_pem_priv(private_key_pem.encode(), password=None)
+    return _b64url_enc(key.sign(payload.encode("utf-8")))
+
+
+def load_or_generate_device_identity() -> "dict | None":
+    """Load persisted Ed25519 device key, or generate a new one."""
+    if not _CRYPTO_OK:
+        return None
+    if _DEVICE_IDENTITY_PATH.exists():
+        try:
+            saved = json.loads(_DEVICE_IDENTITY_PATH.read_text())
+            _load_pem_priv(saved["privateKeyPem"].encode(), password=None)  # validate
+            return saved
+        except Exception as e:
+            print(f"[device] Failed to load identity, regenerating: {e}")
+    priv = _Ed25519Key.generate()
+    raw_pub = priv.public_key().public_bytes(_Enc.Raw, _PubFmt.Raw)
+    priv_pem = priv.private_bytes(_Enc.PEM, _PrivFmt.PKCS8, _NoEnc()).decode()
+    pub_b64 = _b64url_enc(raw_pub)
+    device_id = hashlib.sha256(raw_pub).hexdigest()
+    identity = {"deviceId": device_id, "privateKeyPem": priv_pem, "publicKeyBase64Url": pub_b64}
+    try:
+        _DEVICE_IDENTITY_PATH.write_text(json.dumps(identity, indent=2))
+        print(f"[device] Generated device identity: {device_id[:16]}...")
+    except Exception as e:
+        print(f"[device] Could not save identity: {e}")
+    return identity
+
+
+def ensure_device_registered(identity: dict) -> bool:
+    """Add device to paired.json if missing/outdated. Returns True if restart needed."""
+    paired_path = OPENCLAW_DIR / "devices" / "paired.json"
+    if not paired_path.exists():
+        return False
+    try:
+        data = json.loads(paired_path.read_text())
+        device_id = identity["deviceId"]
+        existing = data.get(device_id, {})
+        if set(existing.get("scopes", [])) >= set(_DEVICE_PAIRED_SCOPES):
+            return False  # already registered with correct scopes
+        now_ms = int(time.time() * 1000)
+        data[device_id] = {
+            "deviceId": device_id,
+            "publicKey": identity["publicKeyBase64Url"],
+            "platform": "web",
+            "clientId": "webchat-ui",
+            "clientMode": "webchat",
+            "role": "operator",
+            "roles": ["operator"],
+            "scopes": _DEVICE_PAIRED_SCOPES,
+            "approvedScopes": _DEVICE_PAIRED_SCOPES,
+            "tokens": {},
+            "createdAtMs": now_ms,
+            "approvedAtMs": now_ms,
+        }
+        paired_path.write_text(json.dumps(data, indent=2))
+        print(f"[device] Registered {device_id[:16]}... in paired.json")
+        return True  # gateway restart needed
+    except Exception as e:
+        print(f"[device] paired.json update failed: {e}")
+        return False
+
+
+def restart_gateway_for_device():
+    """Restart OpenClaw gateway so it picks up the newly registered device."""
+    print("[device] Restarting gateway to load new device registration...")
+    mjs = "/usr/local/lib/node_modules/openclaw/openclaw.mjs"
+    for node_bin in ("node", "/Users/openclaw/.homebrew/bin/node",
+                     "/usr/local/bin/node", "/opt/homebrew/bin/node"):
+        try:
+            r = subprocess.run([node_bin, mjs, "daemon", "restart"],
+                               timeout=15, capture_output=True)
+            if r.returncode == 0:
+                print("[device] Gateway restarted — waiting 3s...")
+                time.sleep(3)
+                return
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            print(f"[device] Gateway restart error: {e}")
+            return
+    print("[device] Could not restart gateway — please restart manually")
+
+
 def load_gateway_config() -> dict:
     """Load OpenClaw gateway configuration from openclaw.json.
     Returns dict with 'token', 'bind', 'port', 'available' keys.
@@ -703,10 +828,17 @@ def create_gateway_client_from_runtime() -> "GatewayClient | None":
     if not gateway_config.get("available"):
         return None
 
+    device_identity = load_or_generate_device_identity()
+    if device_identity:
+        needs_restart = ensure_device_registered(device_identity)
+        if needs_restart:
+            restart_gateway_for_device()
+
     return GatewayClient(
         host=gateway_config["bind"],
         port=gateway_config["port"],
         token=gateway_config["token"],
+        device_identity=device_identity,
     )
 
 def ensure_server_gateway_client(
@@ -2015,10 +2147,11 @@ def session_paths_state(paths: list[Path]) -> dict | None:
 class GatewayClient:
     """WebSocket client for OpenClaw Gateway JSON-RPC protocol."""
     
-    def __init__(self, host: str, port: int, token: str):
+    def __init__(self, host: str, port: int, token: str, device_identity: "dict | None" = None):
         self.host = host
         self.port = port
         self.token = token
+        self.device_identity = device_identity
         self.ws = None
         self.connected = False
         self.thread = None
@@ -2157,11 +2290,36 @@ class GatewayClient:
         print(f"Gateway WebSocket closed: {close_status_code} {close_msg}")
     
     def _send_connect(self):
-        """Send connect request with token auth."""
+        """Send connect request with token auth and (if available) signed device identity."""
         if not self.nonce:
             return
-        
+
         req_id = str(uuid.uuid4())
+        scopes = _DEVICE_PAIRED_SCOPES if (self.device_identity and _CRYPTO_OK) \
+                 else ["operator.admin", "operator.write", "operator.read"]
+
+        device_obj = None
+        if self.device_identity and _CRYPTO_OK:
+            try:
+                signed_at_ms = int(time.time() * 1000)
+                payload = _make_device_v3_payload(
+                    self.device_identity["deviceId"],
+                    self.token,
+                    self.nonce,
+                    signed_at_ms,
+                    scopes,
+                )
+                sig = _sign_device_payload(self.device_identity["privateKeyPem"], payload)
+                device_obj = {
+                    "id": self.device_identity["deviceId"],
+                    "publicKey": self.device_identity["publicKeyBase64Url"],
+                    "signature": sig,
+                    "signedAt": signed_at_ms,
+                    "nonce": self.nonce,
+                }
+            except Exception as e:
+                print(f"[device] Signature error: {e}")
+
         connect_req = {
             "type": "req",
             "id": req_id,
@@ -2171,12 +2329,12 @@ class GatewayClient:
                 "maxProtocol": 3,
                 "client": {
                     "id": "webchat-ui",
-                    "version": "1.3.0",
+                    "version": "2026.3.13",
                     "platform": "web",
                     "mode": "webchat"
                 },
                 "role": "operator",
-                "scopes": ["operator.admin", "operator.write", "operator.read"],
+                "scopes": scopes,
                 "caps": [],
                 "commands": [],
                 "permissions": {},
@@ -2185,7 +2343,9 @@ class GatewayClient:
                 }
             }
         }
-        
+        if device_obj:
+            connect_req["params"]["device"] = device_obj
+
         try:
             self.ws.send(json.dumps(connect_req))
         except Exception as e:
