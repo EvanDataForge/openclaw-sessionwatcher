@@ -2430,7 +2430,7 @@ function renderSessionList() {
       <div class="card-row1">
         <span class="type-badge ${typeClass}">${esc(s.type_label)}</span>
         ${labelHtml}
-        ${statusDot}${unreadDot}
+        ${unreadDot}${statusDot}
       </div>
       <div class="card-row2">
         ${modelShort ? `<span class="card-model" title="${esc(rawModel)}">${esc(modelShort)}</span><span class="card-sep">·</span>` : ''}
