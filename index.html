@@ -741,30 +741,38 @@
 
   /* ── Typing indicator ── */
   .msg-typing {
-    display: flex;
+    display: inline-flex;
+    align-self: flex-start;
     align-items: center;
-    gap: 8px;
-    padding: 12px 16px;
-    margin: 8px 0;
-    background: rgba(255,255,255,.03);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    gap: 5px;
+    padding: 0 0 1px 2px;
+    margin: 12px 0 2px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
     color: var(--muted);
-    font-size: 13px;
+    font-size: 11px;
+    line-height: 1.2;
+    opacity: 0.85;
   }
 
   .typing-dots {
     display: flex;
-    gap: 3px;
+    gap: 2px;
     align-items: center;
   }
 
   .typing-dots span {
-    width: 6px;
-    height: 6px;
+    width: 4px;
+    height: 4px;
     border-radius: 50%;
     background: var(--green);
     animation: typing-dot 1.4s infinite;
+  }
+
+  .typing-text {
+    font-size: 11px;
+    letter-spacing: .01em;
   }
 
   .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -776,8 +784,7 @@
   }
 
   body.light .msg-typing {
-    background: rgba(15,23,42,.04);
-    border-color: rgba(15,23,42,.10);
+    color: var(--muted);
   }
   #raw-modal {
     display: none;
@@ -1474,6 +1481,9 @@ const State = {
   detailFallbackStep: 0,
   detailLoadToken: 0,
   detailEntrySignatures: {},
+  detailMessages: [],
+  pendingProcessingSessionId: null,
+  pendingProcessingUntilMs: 0,
   gatewayAvailable: false, // Gateway connection available
   gatewaySending: false,   // Chat message send in progress
 };
@@ -1595,6 +1605,11 @@ const ChatInput = {
     this._lastSubmitSig = submitSig;
     this._lastSubmitAtMs = nowMs;
     const idempotencyKey = this._makeIdempotencyKey(sessionKey, text);
+
+    // Optimistic hint: show processing immediately after send.
+    State.pendingProcessingSessionId = currentSession.session_id || null;
+    State.pendingProcessingUntilMs = Date.now() + 90_000;
+    App.refresh();
     
     // Send message
     State.gatewaySending = true;
@@ -1617,9 +1632,11 @@ const ChatInput = {
           }
         }, 500);
       } else {
+        clearPendingProcessingHint(currentSession.session_id);
         this.showStatus(`Error: ${response.error}`, false);
       }
     } catch (error) {
+      clearPendingProcessingHint(currentSession.session_id);
       this.showStatus(`Error: ${error.message}`, false);
     } finally {
       State.gatewaySending = false;
@@ -2046,6 +2063,62 @@ function formatCronTime(ms) {
   return `${days}d`;
 }
 
+function normalizeStopReason(reason) {
+  const raw = String(reason || '').trim();
+  if (!raw) return '';
+  return raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[\s\-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+}
+
+const TERMINAL_STOP_REASONS = new Set(['stop', 'error', 'length', 'aborted', 'end_turn', 'max_tokens']);
+
+function isTerminalStopReason(reason) {
+  return TERMINAL_STOP_REASONS.has(normalizeStopReason(reason));
+}
+
+function parseIsoMs(isoTs) {
+  if (!isoTs) return 0;
+  const ms = Date.parse(isoTs);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function clearPendingProcessingHint(sessionId = null) {
+  if (!State.pendingProcessingSessionId) return;
+  if (sessionId && State.pendingProcessingSessionId !== sessionId) return;
+  State.pendingProcessingSessionId = null;
+  State.pendingProcessingUntilMs = 0;
+}
+
+function shouldShowTypingIndicator(messages) {
+  const currentSession = State.sessions.find(s => s.session_id === State.selectedId);
+  if (!currentSession) return false;
+
+  if (currentSession.is_processing) return true;
+
+  const nowMs = Date.now();
+  const pendingActive = (
+    State.pendingProcessingSessionId === currentSession.session_id
+    && nowMs < (State.pendingProcessingUntilMs || 0)
+  );
+  if (pendingActive) return true;
+
+  if (!Array.isArray(messages) || !messages.length) return false;
+
+  const lastRelevant = [...messages].reverse().find(m => m && ['assistant', 'user', 'toolResult'].includes(m.role));
+  if (!lastRelevant) return false;
+
+  const lastTsMs = parseIsoMs(lastRelevant.ts_iso);
+  if (lastTsMs && (nowMs - lastTsMs) > 120000) return false;
+
+  if (lastRelevant.role === 'user' || lastRelevant.role === 'toolResult') return true;
+  if (lastRelevant.role === 'assistant') return !isTerminalStopReason(lastRelevant.stop_reason);
+  return false;
+}
+
 function getMessageKey(message, idx) {
   if (message?.id) return `id:${message.id}`;
   return `idx:${idx}|role:${message?.role || ''}|ts:${message?.ts_fmt || ''}|event:${message?.event_type || ''}`;
@@ -2146,10 +2219,18 @@ function renderSessionList() {
     const selected = s.session_id === State.selectedId ? ' selected' : '';
     const unread   = State.unread.has(s.session_id) ? ' unread' : '';
     const STOP_REASONS = new Set(['stop','error','length','aborted']);
-    const lastStop = s.last_stop_reason || '';
+    const lastStop = normalizeStopReason(s.last_stop_reason || '');
     const recent   = isRecent(s);
     const stopped  = STOP_REASONS.has(lastStop);
-    const processing = s.is_processing || false;
+    const pendingProcessing = (
+      State.pendingProcessingSessionId === s.session_id
+      && Date.now() < (State.pendingProcessingUntilMs || 0)
+    );
+    const inferredSelectedProcessing = (
+      s.session_id === State.detailSessionId
+      && shouldShowTypingIndicator(State.detailMessages || [])
+    );
+    const processing = !!s.is_processing || pendingProcessing || inferredSelectedProcessing;
     let statusDot = '';
     if (processing) {
       statusDot = `<div class="ss-dot ss-typing" title="Processing…"></div>`;
@@ -2700,14 +2781,13 @@ function renderMessages(messages, transitions = {}) {
     </div>`;
   }).join('');
 
-  // Add typing animation if session is processing
-  const currentSession = State.sessions.find(s => s.session_id === State.selectedId);
-  if (currentSession && currentSession.is_processing) {
+  // Add typing animation while backend reports processing or inferred active work.
+  if (shouldShowTypingIndicator(messages)) {
     el.innerHTML += `<div class="msg-typing">
       <div class="typing-dots">
         <span></span><span></span><span></span>
       </div>
-      <span class="typing-text">OpenClaw is processing…</span>
+      <span class="typing-text">processing</span>
     </div>`;
   }
 
@@ -2829,6 +2909,12 @@ const App = {
     State.loading = true;
     document.getElementById('status-dot').className = 'status-dot';
 
+    const previousSelectedId = State.selectedId;
+    const previousSelectedSession = previousSelectedId
+      ? (State.sessions.find(s => s.session_id === previousSelectedId) || findSessionByAnchor(State.selectedAnchor))
+      : null;
+    const previousSelectedProcessing = previousSelectedSession ? !!previousSelectedSession.is_processing : null;
+
     // Snapshot old msg counts for unread detection
     const oldCounts = {};
     State.sessions.forEach(s => { oldCounts[s.session_id] = s.msg_count || 0; });
@@ -2839,7 +2925,6 @@ const App = {
       State.authError = null;
       State.sessions   = data.sessions || [];
       State.lastRefresh = data.generated_fmt || '';
-      const previousSelectedId = State.selectedId;
       const trackedSession = this._resolveSelectedSession(previousSelectedId);
       const followedReplacement = !!(
         trackedSession
@@ -2889,6 +2974,12 @@ const App = {
         const detailMsgCount = detailIsTrackedSession ? (State.lastMsgCount || 0) : -1;
         const listMsgCount = trackedSession.msg_count || 0;
         const detailBehindList = detailIsTrackedSession && listMsgCount > detailMsgCount;
+        const processingChanged = detailIsTrackedSession
+          && previousSelectedProcessing !== null
+          && (!!trackedSession.is_processing !== previousSelectedProcessing);
+        const pendingHintActive = detailIsTrackedSession
+          && State.pendingProcessingSessionId === trackedSession.session_id
+          && Date.now() < (State.pendingProcessingUntilMs || 0);
 
         if (followedReplacement) {
           this._closeDetailStream();
@@ -2899,9 +2990,12 @@ const App = {
             ChatInput.show();
             ChatInput.showStatus('Session log rotated. Following the newest session ID.', true);
           }
-        } else if (detailBehindList) {
+        } else if (detailBehindList || processingChanged || pendingHintActive) {
           // Safety sync: list metadata can advance before the detail SSE event arrives.
-          await this._loadDetail(trackedSession, true, 'refresh-sync');
+          const refreshSource = pendingHintActive
+            ? 'refresh-pending'
+            : (processingChanged ? 'refresh-state' : 'refresh-sync');
+          await this._loadDetail(trackedSession, true, refreshSource);
         } else if (
           !State.detailStreamConnected
           && !State.detailFallbackTimer
@@ -2933,6 +3027,7 @@ const App = {
   _clearSelection() {
     State.selectedId     = null;
     State.selectedAnchor = null;
+    State.detailMessages = [];
     this._closeDetailStream();
     this._stopDetailFallback();
     document.querySelectorAll('.session-card').forEach(el => el.classList.remove('selected'));
@@ -2944,6 +3039,7 @@ const App = {
     if (statsEl) { statsEl.style.display = 'none'; statsEl.innerHTML = ''; }
     const msgsEl = document.getElementById('messages');
     if (msgsEl) msgsEl.innerHTML = '<div class="empty"><div class="empty-icon">📡</div><div class="empty-text">Select a session to view messages</div></div>';
+    clearPendingProcessingHint();
     ChatInput.hide();
   },
 
@@ -2990,6 +3086,7 @@ const App = {
     if (!s) return;
 
     this._trackSelectedSession(s);
+    State.detailMessages = [];
     State.unread.delete(sessionId);
     // Update selected/unread highlight
     document.querySelectorAll('.session-card').forEach(el => {
@@ -3159,6 +3256,16 @@ const App = {
       State.authError = null;
       const msgs = data.messages || [];
       const newCount = msgs.length;
+      State.detailMessages = msgs;
+
+      if (State.pendingProcessingSessionId === s.session_id) {
+        const lastAssistant = [...msgs].reverse().find(m => m.role === 'assistant');
+        if (lastAssistant && isTerminalStopReason(lastAssistant.stop_reason)) {
+          clearPendingProcessingHint(s.session_id);
+        } else if (Date.now() >= (State.pendingProcessingUntilMs || 0)) {
+          clearPendingProcessingHint(s.session_id);
+        }
+      }
 
       const syncedSession = this._syncSessionSummaryFromMessages(s.session_id, msgs);
       if (syncedSession) {

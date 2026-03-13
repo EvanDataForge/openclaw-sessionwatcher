@@ -331,6 +331,60 @@ def time_ago(ms: int) -> str:
         return f"{int(diff/3600)}h ago"
     return f"{int(diff/86400)}d ago"
 
+
+_TERMINAL_STOP_REASONS = {
+    "stop",
+    "error",
+    "length",
+    "aborted",
+    "end_turn",
+    "max_tokens",
+}
+
+
+def normalize_stop_reason(reason: str) -> str:
+    """Normalize stop reason values across camelCase/snake-case variants."""
+    raw = str(reason or "").strip()
+    if not raw:
+        return ""
+    # Convert camelCase/PascalCase to snake_case before lower-casing.
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", raw)
+    snake = re.sub(r"[\s\-]+", "_", snake)
+    snake = re.sub(r"_+", "_", snake)
+    return snake.strip("_").lower()
+
+
+def has_active_session_lock(jsonl_paths: list[Path], last_ts_ms: int, last_stop_reason: str) -> bool:
+    """Best-effort lock activity check that ignores stale locks after terminal stops."""
+    newest_lock_ms = 0
+
+    for jsonl_path in jsonl_paths:
+        lock_path = jsonl_path.with_suffix(jsonl_path.suffix + ".lock")
+        try:
+            st = lock_path.stat()
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+
+        lock_ms = int(st.st_mtime * 1000)
+        if lock_ms > newest_lock_ms:
+            newest_lock_ms = lock_ms
+
+    if not newest_lock_ms:
+        return False
+
+    # A lock newer than the latest emitted message usually means an active run.
+    if last_ts_ms and newest_lock_ms > (last_ts_ms + 1000):
+        return True
+
+    # If we already reached a terminal stop reason, treat old locks as stale.
+    if normalize_stop_reason(last_stop_reason) in _TERMINAL_STOP_REASONS:
+        return False
+
+    # Ambiguous fallback: keep "processing" to avoid hiding an actually running turn.
+    return True
+
 _NON_MODEL_VALUES = {
     "-",
     "—",
@@ -1276,7 +1330,7 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             "ts_fmt":       fmt_iso(entry.get("timestamp", "")),
             "model":        friendly_model(msg.get("model", "")),
             "full_model":   _get_full_model_name(msg.get("model", ""), msg.get("provider", "")),
-            "stop_reason":  msg.get("stopReason", msg.get("stop_reason", "")),
+            "stop_reason":  normalize_stop_reason(msg.get("stopReason", msg.get("stop_reason", ""))),
             "error_message": error_message,
             "input_tok":    usage.get("input", 0),
             "output_tok":   usage.get("output", 0),
@@ -1519,7 +1573,7 @@ def load_all_sessions() -> list[dict]:
                         break
                 for m in reversed(real_msgs):
                     if m["role"] == "assistant" and m.get("stop_reason"):
-                        last_stop_reason = m["stop_reason"]
+                        last_stop_reason = normalize_stop_reason(m["stop_reason"])
                         break
                 if msgs:
                     last_ts_iso = msgs[-1]["ts_iso"]
@@ -1629,11 +1683,7 @@ def load_all_sessions() -> list[dict]:
             # Check for active processing (lock file existence)
             is_processing = False
             if has_file and jsonl_paths:
-                for jsonl_path in jsonl_paths:
-                    lock_path = jsonl_path.with_suffix(jsonl_path.suffix + '.lock')
-                    if lock_path.exists():
-                        is_processing = True
-                        break
+                is_processing = has_active_session_lock(jsonl_paths, last_ts_ms, last_stop_reason)
 
             session_obj = {
                 "key":        key,
