@@ -1534,13 +1534,16 @@ def load_all_sessions() -> list[dict]:
                             acpx_data = json.load(f)
                         acpx_msgs = acpx_data.get("messages", [])
                         msg_count = len(acpx_msgs)
-                        # Determine stop reason from last Agent content
+                        # Determine stop reason from last tool result
                         for acpx_msg in reversed(acpx_msgs):
                             if "Agent" in acpx_msg:
+                                tool_results = acpx_msg["Agent"].get("tool_results", {})
                                 content = acpx_msg["Agent"].get("content", [])
                                 for block in reversed(content):
-                                    if isinstance(block, dict) and "ToolResult" in block:
-                                        if block["ToolResult"].get("is_error"):
+                                    if isinstance(block, dict) and "ToolUse" in block:
+                                        tid = block["ToolUse"].get("id", "")
+                                        tr = tool_results.get(tid)
+                                        if tr and tr.get("is_error"):
                                             last_stop_reason = "error"
                                         break
                                 break
@@ -1735,16 +1738,22 @@ def get_acp_session_info(acp_session_id: str) -> dict:
     if agent_exited:
         pid = None
 
-    # Check if last content block was an error
+    # Check if last tool result was an error
     last_is_error = False
     messages = acp_data.get("messages", [])
     for msg in reversed(messages):
         if "Agent" in msg:
-            content = msg["Agent"].get("content", [])
-            for block in reversed(content):
-                if isinstance(block, dict) and "ToolResult" in block:
-                    last_is_error = block["ToolResult"].get("is_error", False)
-                    break
+            tool_results = msg["Agent"].get("tool_results", {})
+            if tool_results:
+                # Find the result for the last ToolUse in content
+                content = msg["Agent"].get("content", [])
+                for block in reversed(content):
+                    if isinstance(block, dict) and "ToolUse" in block:
+                        tid = block["ToolUse"].get("id", "")
+                        tr = tool_results.get(tid)
+                        if tr is not None:
+                            last_is_error = tr.get("is_error", False)
+                        break
             break
 
     # Calculate time since last activity
@@ -1838,6 +1847,7 @@ def load_acp_session_messages(acp_session_id: str) -> list[dict]:
         elif "Agent" in msg:
             agent_data = msg["Agent"]
             content_list = agent_data.get("content", [])
+            tool_results = agent_data.get("tool_results", {})
             blocks = []
             plain_parts = []
             stop_reason = "end_turn"
@@ -1855,25 +1865,28 @@ def load_acp_session_messages(acp_session_id: str) -> list[dict]:
                     plain_parts.append(t)
                 elif "ToolUse" in item:
                     tu = item["ToolUse"]
+                    tool_id = tu.get("id", "")
                     name = tu.get("name", "?")
                     inp = tu.get("input", {})
                     args_str = json.dumps(inp, ensure_ascii=False, indent=2) if isinstance(inp, dict) else str(inp)
                     blocks.append({"kind": "toolCall", "name": name, "args": args_str})
-                elif "ToolResult" in item:
-                    tr = item["ToolResult"]
-                    is_error = tr.get("is_error", False)
-                    content = tr.get("content", {})
-                    if isinstance(content, dict) and "Text" in content:
-                        preview = content["Text"][:300]
-                    elif isinstance(content, str):
-                        preview = content[:300]
-                    else:
-                        preview = ""
-                    if is_error:
-                        stop_reason = "error"
-                    blocks.append({"kind": "toolResult", "name": "?",
-                                   "text": preview, "text_full": preview,
-                                   "total_chars": len(preview), "is_error": is_error})
+                    # Inject corresponding tool result immediately after its call
+                    tr = tool_results.get(tool_id)
+                    if tr is not None:
+                        is_error = tr.get("is_error", False)
+                        output = tr.get("output") or ""
+                        if not output:
+                            content = tr.get("content", {})
+                            if isinstance(content, dict) and "Text" in content:
+                                output = content["Text"]
+                            elif isinstance(content, str):
+                                output = content
+                        tool_name = tr.get("tool_name") or name
+                        if is_error:
+                            stop_reason = "error"
+                        blocks.append({"kind": "toolResult", "name": tool_name,
+                                       "text": output[:300], "text_full": output,
+                                       "total_chars": len(output), "is_error": is_error})
 
             text = " ".join(plain_parts).strip() or "(no text output)"
             result.append({

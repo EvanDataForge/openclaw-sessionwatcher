@@ -231,9 +231,9 @@
     overflow-y: auto;
     flex: 1;
   }
-  #session-list::-webkit-scrollbar { width: 4px; }
+  #session-list::-webkit-scrollbar { width: 12px; }
   #session-list::-webkit-scrollbar-track { background: transparent; }
-  #session-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  #session-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
 
   .session-card {
     padding: 10px 14px;
@@ -403,9 +403,9 @@
     flex-direction: column;
     gap: 10px;
   }
-  #messages::-webkit-scrollbar { width: 4px; }
+  #messages::-webkit-scrollbar { width: 12px; }
   #messages::-webkit-scrollbar-track { background: transparent; }
-  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
 
   .msg-bubble {
     display: flex;
@@ -909,7 +909,7 @@
     color: var(--accent);
     margin-bottom: 4px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 6px;
   }
   .block-toolcall-args {
@@ -955,11 +955,15 @@
     color: var(--green);
     margin-bottom: 4px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 6px;
   }
-  .block-toolresult.error .block-toolresult-header { color: var(--red); }
-  .block-toolresult.failed .block-toolresult-header { color: var(--red); }
+  .block-toolresult.error .block-toolresult-header { color: var(--muted); font-weight: 400; }
+  .block-toolresult.error .block-toolresult-header strong { font-weight: 400; }
+  .block-toolresult.error .block-toolresult-preview { color: var(--red); font-weight: 600; }
+  .block-toolresult.failed .block-toolresult-header { color: var(--muted); font-weight: 400; }
+  .block-toolresult.failed .block-toolresult-header strong { font-weight: 400; }
+  .block-toolresult.failed .block-toolresult-preview { color: var(--red); font-weight: 600; }
   .block-toolresult.running .block-toolresult-header { color: var(--orange); }
   .block-toolresult.accepted .block-toolresult-header { color: var(--accent); }
   .block-toolresult.completed .block-toolresult-header { color: var(--green); }
@@ -1315,9 +1319,9 @@
   }
 
   /* ── Scrollbar global ── */
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar { width: 12px; height: 12px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 0; }
 </style>
 </head>
 <body>
@@ -2158,7 +2162,9 @@ function renderSessionList() {
     }
     const unreadDot = State.unread.has(s.session_id) ? `<div class="unread-dot" title="New messages"></div>` : '';
     const typeClass = `type-${s.type}`;
-    const rawModel = (s.full_model || s.model) && (s.full_model || s.model) !== '—' && (s.full_model || s.model) !== 'gateway-injected' ? (s.full_model || s.model) : '';
+    const rawModel = s.type === 'acp'
+      ? (s.acp_agent || '')
+      : ((s.full_model || s.model) && (s.full_model || s.model) !== '—' && (s.full_model || s.model) !== 'gateway-injected' ? (s.full_model || s.model) : '');
     const modelShort = rawModel.length > 100 ? rawModel.slice(0,100)+'…' : rawModel;
     const timeAgo = fmtTimeAgo(getSessionActivityMs(s)) || s.time_ago || '—';
 
@@ -2217,7 +2223,7 @@ function renderDetailHeader(s) {
     let meta = s.agent;
     if (s.type === 'cron') {
       meta += ` · ${s.session_key || 'no session key'}`;
-    } else {
+    } else if (s.type !== 'acp') {
       meta += ` · ${s.last_channel || 'unknown channel'}`;
     }
     metaEl.textContent = meta;
@@ -2238,10 +2244,6 @@ function renderAcpDetailStats(s) {
       <div class="stat-item">
         <div class="stat-label">Last Activity</div>
         <div class="stat-value" id="acp-last-activity">—</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-label">Input Tokens</div>
-        <div class="stat-value" id="acp-input-tokens">—</div>
       </div>
       <div class="stat-item">
         <div class="stat-label">Session ID</div>
@@ -2288,15 +2290,11 @@ async function loadAcpDetailStats(sessionId) {
       timestamp = `${day}.${month}.${year} ${hours}:${minutes}`;
     }
 
-    const tokens = (data.cumulative_token_usage?.inputTokens || 0).toLocaleString();
-
     const statusEl = document.getElementById('acp-status-badge');
     const activityEl = document.getElementById('acp-last-activity');
-    const tokensEl = document.getElementById('acp-input-tokens');
 
     if (statusEl) statusEl.textContent = status;
     if (activityEl) activityEl.textContent = timestamp;
-    if (tokensEl) tokensEl.textContent = tokens;
   } catch (e) {
     // Silent fail
   }
@@ -3005,8 +3003,8 @@ const App = {
     await this._loadDetail(s, false, 'select');
     this._openDetailStream(sessionId);
     
-    // Show/hide chat input based on gateway availability
-    if (State.gatewayAvailable) {
+    // Show/hide chat input based on gateway availability and session type
+    if (State.gatewayAvailable && s.type !== 'acp') {
       ChatInput.show();
     } else {
       ChatInput.hide();
