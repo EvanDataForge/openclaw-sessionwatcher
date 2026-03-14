@@ -157,6 +157,12 @@ Dark mode is the default. An optional light mode is available for brighter envir
   - Session list status dot, cron `Running...` label, and typing indicator now share the same processing-state helper logic
   - Reduces temporary state mismatches between detail view and session list during live updates
 
+## Release 2026.3.14 Highlights
+
+- **Cron session last-activity accuracy**: `effective_updated_at` for cron parent sessions now uses the maximum `updatedAt` across all `:run:` sub-sessions as a lower bound. This ensures "last activity" in the session list reflects the most recent cron run even when the parent session's own JSONL or metadata entry has an older timestamp.
+
+- **Clipboard copy fallback**: `copyMsgId` (used for session and message ID copy buttons) now falls back to the legacy `document.execCommand('copy')` path when `navigator.clipboard` is unavailable — e.g. when the UI is served over plain HTTP or in older browsers.
+
 ## Release 2026.3.13 Highlights
 
 **Requires OpenClaw ≥ 2026.3.12** — the gateway introduced scope-enforcement for clients without a signed device identity. Without a device signature, `clearUnboundScopes()` strips `operator.write` from the connection, causing `chat.send` to fail with `missing scope: operator.write`.

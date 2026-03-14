@@ -1749,6 +1749,18 @@ def load_all_sessions() -> list[dict]:
                     pass
             effective_updated_at = last_ts_ms if last_ts_ms else updated_at
 
+            # For cron sessions: the parent entry's sessionFile can be stale while
+            # individual :run: sub-sessions completed more recently without writing
+            # new JSONL messages. Use the max updatedAt of all :run: sub-sessions
+            # as a floor so "last activity" reflects the most recent run.
+            run_prefix = key + ":run:"
+            max_run_updated_at = max(
+                (v.get("updatedAt", 0) for k, v in store.items() if k.startswith(run_prefix)),
+                default=0,
+            )
+            if max_run_updated_at > effective_updated_at:
+                effective_updated_at = max_run_updated_at
+
             stype = session_type(key, val)
 
             # Session label — prefer human-readable names from metadata

@@ -3525,12 +3525,27 @@ const App = {
 };
 
 function copyMsgId(fullId, btn) {
-    animateButton(btn);
-  navigator.clipboard.writeText(fullId).then(() => {
+  animateButton(btn);
+  const showCheck = () => {
     const prev = btn.textContent;
     btn.textContent = '✓';
     setTimeout(() => btn.textContent = prev, 1200);
-  }).catch(() => {});
+  };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = fullId;
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); showCheck(); } catch(e) {}
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(fullId).then(showCheck).catch(fallback);
+  } else {
+    fallback();
+  }
 }
 
 function openRawModal(idx, btn) {
