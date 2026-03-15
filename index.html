@@ -1698,7 +1698,8 @@ const ChatInput = {
       if (response.ok) {
         input.value = '';
         this.showStatus('Message sent', true);
-        
+        Scroll.toBottom();
+
         // Reload messages after short delay
         setTimeout(() => {
           const activeSession = App._resolveSelectedSession(State.detailSessionId);
