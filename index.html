@@ -1435,7 +1435,7 @@
       <div class="about-separator" aria-hidden="true"></div>
       <div class="about-right">
         <h2>OpenClaw Session Watcher</h2>
-        <p><strong>Version</strong><br>1.3</p>
+        <p><strong>Version</strong><br>2026-03-18</p>
         <p>OpenClaw Session Watcher is a lightweight local agent session monitor that lets you watch OpenClaw sessions in real time — with chat bubbles, thinking blocks, tool calls, and live auto-refresh.</p>
         <hr class="about-divider">
         <p>
@@ -1728,11 +1728,20 @@ const ChatInput = {
     }
   },
   
+  _statusTimer: null,
+
   showStatus(message, success) {
     const status = document.getElementById('chat-status');
-    if (status) {
-      status.textContent = message;
-      status.className = success ? 'success' : '';
+    if (!status) return;
+    if (this._statusTimer) { clearTimeout(this._statusTimer); this._statusTimer = null; }
+    status.textContent = message;
+    status.className = success ? 'success' : '';
+    if (message && success) {
+      this._statusTimer = setTimeout(() => {
+        status.textContent = '';
+        status.className = '';
+        this._statusTimer = null;
+      }, 5000);
     }
   },
   
@@ -3288,6 +3297,7 @@ const App = {
     this._openDetailStream(sessionId);
     
     // Show/hide chat input based on gateway availability and session type
+    ChatInput.showStatus('', false);
     if (State.gatewayAvailable && s.type !== 'acp') {
       ChatInput.show();
     } else {
