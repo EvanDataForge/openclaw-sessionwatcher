@@ -1,4 +1,4 @@
-# OpenClaw Session Watcher / Dashboard
+# OpenClaw SessionWatcher Dashboard
 
 <img align="right" src="doc/OpenClawSessionWatcherLogoBasicSmall.png" alt="OpenClaw Session Watcher Logo" />
 
