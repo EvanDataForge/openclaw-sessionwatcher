@@ -104,7 +104,7 @@ def _looks_like_telegram_id(value) -> bool:
     return bool(s) and s.isdigit() and len(s) >= 5
 
 def classify_user_source(meta_blocks: list[dict]) -> dict:
-    """Best-effort source classifier for user messages: direct vs telegram."""
+    """Best-effort source classifier for user messages: messenger channel vs direct."""
     if not meta_blocks:
         return {
             "source_channel": "unknown",
@@ -112,7 +112,8 @@ def classify_user_source(meta_blocks: list[dict]) -> dict:
             "source_id": "",
         }
 
-    saw_telegram = False
+    detected_channel: str | None = None
+    saw_telegram_keys = False
     saw_direct = False
     source_label = ""
     source_id = ""
@@ -131,9 +132,11 @@ def classify_user_source(meta_blocks: list[dict]) -> dict:
         if not source_label and label:
             source_label = label
 
-        # Telegram indicators from conversation/sender metadata.
-        if provider == "telegram":
-            saw_telegram = True
+        # Provider field is the most reliable indicator — trust it directly.
+        if provider in _MESSENGER_CHANNELS:
+            detected_channel = provider
+
+        # Telegram-specific metadata keys (also used by some WhatsApp implementations).
         if {
             "sender_id",
             "message_id",
@@ -141,11 +144,11 @@ def classify_user_source(meta_blocks: list[dict]) -> dict:
             "group_subject",
             "is_group_chat",
         } & keys:
-            saw_telegram = True
+            saw_telegram_keys = True
         if _looks_like_telegram_id(block.get("sender_id")) or _looks_like_telegram_id(sid):
-            saw_telegram = True
+            saw_telegram_keys = True
 
-        # Direct/webchat indicators from sender metadata.
+        # Direct/webchat indicators.
         sid_l = sid.lower()
         label_l = label.lower()
         if sid_l in _DIRECT_GATEWAY_IDS or label_l in _DIRECT_GATEWAY_IDS:
@@ -160,14 +163,12 @@ def classify_user_source(meta_blocks: list[dict]) -> dict:
         ):
             saw_direct = True
 
-    if saw_telegram and not saw_direct:
-        channel = "telegram"
-    elif saw_direct and not saw_telegram:
+    if saw_direct and not detected_channel:
         channel = "direct"
-    elif saw_telegram:
+    elif detected_channel:
+        channel = detected_channel
+    elif saw_telegram_keys:
         channel = "telegram"
-    elif saw_direct:
-        channel = "direct"
     else:
         channel = "unknown"
 
@@ -436,31 +437,54 @@ def _get_full_model_name(model: str, provider: str = "") -> str:
 
     return raw_model
 
+# All channel IDs supported by OpenClaw (from cli-startup-metadata.json).
+_MESSENGER_CHANNELS: frozenset[str] = frozenset({
+    "telegram", "whatsapp", "discord", "irc", "googlechat", "slack",
+    "signal", "imessage", "feishu", "nostr", "msteams", "mattermost",
+    "nextcloud-talk", "matrix", "bluebubbles", "line", "zalo", "zalouser",
+    "synology-chat", "tlon", "twitch",
+})
+
 def session_type(key: str, val: dict | None = None) -> str:
     # Key semantics are the most stable source. Keep channel identity anchored
     # to the session key so transient lastChannel/origin updates do not relabel
-    # Telegram sessions as webchat/direct.
+    # sessions incorrectly.
     if ":cron:" in key or key.startswith("cron:"):
         return "cron"
     if ":acp:" in key or (val and val.get("acp")):
         return "acp"
     if ":subagent:" in key or "subagent" in key:
         return "subagent"
+
+    # Detect messenger channel from key parts: agent:<agentId>:<channel>:<type>:<id>
+    parts = [p for p in key.split(":") if p]
+    if len(parts) >= 3 and parts[0] == "agent" and parts[2] in _MESSENGER_CHANNELS:
+        channel = parts[2]
+        sub_type = parts[3].lower() if len(parts) >= 4 else ""
+        if sub_type == "group":
+            return f"{channel}-group"
+        return channel
+
+    # Legacy bare keys (e.g. "telegram:group:123")
     if ":telegram:group:" in key or key.startswith("telegram:group:"):
-        return "group"
+        return "telegram-group"
     if ":telegram:" in key or key.startswith("telegram:"):
         return "telegram"
 
     # Use rich metadata when available
     if val:
-        chat_type   = val.get("chatType") or ""
+        chat_type    = val.get("chatType") or ""
         last_channel = val.get("lastChannel") or ""
-        origin      = val.get("origin") or {}
-        origin_from = origin.get("from", "")
+        origin       = val.get("origin") or {}
+        origin_from  = origin.get("from", "")
         if chat_type == "group" or "group" in origin_from:
-            return "group"
-        if last_channel == "telegram" or origin.get("provider") == "telegram":
-            return "telegram"
+            channel = last_channel if last_channel in _MESSENGER_CHANNELS \
+                      else (origin.get("provider") if origin.get("provider") in _MESSENGER_CHANNELS else None)
+            return f"{channel}-group" if channel else "group"
+        channel = last_channel if last_channel in _MESSENGER_CHANNELS \
+                  else (origin.get("provider") if origin.get("provider") in _MESSENGER_CHANNELS else None)
+        if channel:
+            return channel
         if last_channel == "webchat" or origin.get("provider") == "webchat":
             return "main"
     # Fallback: key-based
@@ -470,13 +494,56 @@ def session_type(key: str, val: dict | None = None) -> str:
 
 def type_label(t: str) -> str:
     return {
-        "group":    "TG Group",
-        "telegram": "Telegram",
-        "cron":     "Cron",
-        "acp":      "ACP",
-        "subagent": "Subagent",
-        "main":     "Direct",
-        "other":    "Other",
+        # Generic fallback group (unknown channel)
+        "group":                "Group",
+        # Channel-specific group labels (2-letter prefix)
+        "telegram-group":       "TG Group",
+        "whatsapp-group":       "WA Group",
+        "discord-group":        "DC Group",
+        "slack-group":          "SL Group",
+        "signal-group":         "SG Group",
+        "irc-group":            "IR Group",
+        "googlechat-group":     "GC Group",
+        "feishu-group":         "FS Group",
+        "nostr-group":          "NS Group",
+        "msteams-group":        "MS Group",
+        "mattermost-group":     "MM Group",
+        "nextcloud-talk-group": "NC Group",
+        "matrix-group":         "MX Group",
+        "bluebubbles-group":    "IM Group",
+        "line-group":           "LN Group",
+        "zalo-group":           "ZL Group",
+        "zalouser-group":       "ZL Group",
+        "synology-chat-group":  "SY Group",
+        "tlon-group":           "TL Group",
+        "twitch-group":         "TW Group",
+        # DM / channel types
+        "telegram":       "Telegram",
+        "whatsapp":       "WhatsApp",
+        "discord":        "Discord",
+        "slack":          "Slack",
+        "signal":         "Signal",
+        "irc":            "IRC",
+        "googlechat":     "Google Chat",
+        "feishu":         "Feishu",
+        "nostr":          "Nostr",
+        "msteams":        "Teams",
+        "mattermost":     "Mattermost",
+        "nextcloud-talk": "Nextcloud",
+        "matrix":         "Matrix",
+        "bluebubbles":    "iMessage",
+        "line":           "LINE",
+        "zalo":           "Zalo",
+        "zalouser":       "Zalo",
+        "synology-chat":  "Synology",
+        "tlon":           "Tlon",
+        "twitch":         "Twitch",
+        # System types
+        "cron":           "Cron",
+        "acp":            "ACP",
+        "subagent":       "Subagent",
+        "main":           "Direct",
+        "other":          "Other",
     }.get(t, t)
 
 def is_public_host(host: str) -> bool:
@@ -1781,7 +1848,7 @@ def load_all_sessions() -> list[dict]:
                     except ValueError:
                         cron_id = ""
 
-            if stype == "group":
+            if stype.endswith("-group") or stype == "group":
                 delivery_ctx = val.get("deliveryContext") or {}
                 group_subject = ""
                 if isinstance(delivery_ctx, dict):
@@ -1802,11 +1869,11 @@ def load_all_sessions() -> list[dict]:
                     history_group_label = infer_telegram_group_label_from_paths(jsonl_paths)
 
                 label = group_subject or origin_group_subject or origin_group_label or history_group_label or key.strip()
-            elif stype == "telegram":
+            elif stype in _MESSENGER_CHANNELS:
                 origin_dm_label = ""
                 if origin_label and not _looks_like_session_key(origin_label) and not _is_generic_origin_label(origin_label):
                     origin_dm_label = origin_label
-                label = origin_dm_label or (f"DM {parts[-1]}" if parts else key)
+                label = origin_dm_label or (parts[-1] if parts else key)
             elif stype == "cron":
                 label = cron_name_map.get(cron_id, "") or origin_label or key
             elif stype == "acp":

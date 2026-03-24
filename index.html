@@ -24,13 +24,14 @@
     --teal:     #2dd4bf;
     --yellow:   #facc15;
 
-    --type-main:     var(--accent);
-    --type-group:    var(--teal);
-    --type-telegram: var(--purple);
-    --type-cron:     var(--yellow);
-    --type-acp:      #ff66ff;
-    --type-subagent: var(--orange);
-    --type-other:    var(--muted);
+    --type-main:      var(--accent);
+    --type-group:     var(--teal);
+    --type-telegram:  var(--purple);
+    --type-messenger: var(--green);
+    --type-cron:      var(--yellow);
+    --type-acp:       #ff66ff;
+    --type-subagent:  var(--orange);
+    --type-other:     var(--muted);
   }
 
   body.light {
@@ -273,13 +274,30 @@
     flex-shrink: 0;
   }
   .type-main     { background: rgba(79,142,247,.2);  color: var(--type-main); }
-  .type-group    { background: rgba(45,212,191,.2);  color: var(--type-group); }
+  .type-group,
+  .type-telegram-group, .type-whatsapp-group, .type-discord-group,
+  .type-slack-group, .type-signal-group, .type-irc-group,
+  .type-googlechat-group, .type-feishu-group, .type-nostr-group,
+  .type-msteams-group, .type-mattermost-group, .type-nextcloud-talk-group,
+  .type-matrix-group, .type-bluebubbles-group, .type-line-group,
+  .type-zalo-group, .type-zalouser-group, .type-synology-chat-group,
+  .type-tlon-group, .type-twitch-group {
+    background: rgba(45,212,191,.2); color: var(--type-group);
+  }
   .type-telegram { background: rgba(166,123,255,.2); color: var(--type-telegram); }
   .type-cron     { background: rgba(250,204,21,.2);  color: var(--type-cron); }
   body.light .type-cron { color: #92400e; }
   .type-acp      { background: rgba(255,102,255,.2); color: var(--type-acp); }
   .type-subagent { background: rgba(245,166,35,.2);  color: var(--type-subagent); }
   .type-other    { background: rgba(90,97,117,.2);   color: var(--type-other); }
+  /* All other messenger channels share the messenger green */
+  .type-whatsapp, .type-discord, .type-slack, .type-signal,
+  .type-irc, .type-googlechat, .type-feishu, .type-nostr,
+  .type-msteams, .type-mattermost, .type-nextcloud-talk, .type-matrix,
+  .type-bluebubbles, .type-line, .type-zalo, .type-zalouser,
+  .type-synology-chat, .type-tlon, .type-twitch {
+    background: rgba(62,207,110,.15); color: var(--type-messenger);
+  }
 
   .card-label {
     font-size: 12px;
@@ -523,7 +541,7 @@
     letter-spacing: .04em;
   }
   .msg-role.user      { color: var(--teal); }
-  .msg-role.user.source-telegram { color: var(--green); }
+  .msg-role.user.source-messenger { color: var(--green); }
   .msg-role.user.source-direct { color: var(--teal); }
   .msg-role.assistant { color: var(--purple); }
   .msg-role.toolresult { color: var(--green); }
@@ -671,7 +689,7 @@
     border-radius: 18px 18px 5px 18px;
     color: #d4e4ff;
   }
-  .msg-bubble.user.source-telegram .msg-body {
+  .msg-bubble.user.source-messenger .msg-body {
     background: rgba(40,184,110,.16);
     border-color: rgba(40,184,110,.34);
     color: #d6ffea;
@@ -766,7 +784,7 @@
     border-color: rgba(37,99,235,.25);
     color: #1e3a8a;
   }
-  body.light .msg-bubble.user.source-telegram .msg-body {
+  body.light .msg-bubble.user.source-messenger .msg-body {
     background: rgba(22,163,74,.12);
     border-color: rgba(22,163,74,.24);
     color: #14532d;
@@ -1435,7 +1453,7 @@
       <div class="about-separator" aria-hidden="true"></div>
       <div class="about-right">
         <h2>OpenClaw Session Watcher</h2>
-        <p><strong>Version</strong><br>2026-03-18</p>
+        <p><strong>Version</strong><br>2026-03-24</p>
         <p>OpenClaw Session Watcher is a lightweight local agent session monitor that lets you watch OpenClaw sessions in real time — with chat bubbles, thinking blocks, tool calls, and live auto-refresh.</p>
         <hr class="about-divider">
         <p>
@@ -1467,7 +1485,7 @@
     <div id="filter-bar">
       <button class="filter-btn active" data-type="all" onclick="App.setFilter('all',this)">All</button>
       <button class="filter-btn" data-type="main"     onclick="App.setFilter('main',this)">Direct</button>
-      <button class="filter-btn" data-type="telegram" onclick="App.setFilter('telegram',this)">Telegram</button>
+      <button class="filter-btn" data-type="messenger" onclick="App.setFilter('messenger',this)">Messenger</button>
       <button class="filter-btn" data-type="cron"     onclick="App.setFilter('cron',this)">Cron</button>
       <button class="filter-btn" data-type="acp"      onclick="App.setFilter('acp',this)">ACP</button>
       <button class="filter-btn" data-type="subagent" onclick="App.setFilter('subagent',this)">Subagent</button>
@@ -2228,6 +2246,20 @@ function normalizeStopReason(reason) {
 }
 
 const TERMINAL_STOP_REASONS = new Set(['stop', 'error', 'length', 'aborted', 'end_turn', 'max_tokens']);
+const MESSENGER_TYPES = new Set([
+  // DM / channel types
+  'telegram', 'whatsapp', 'discord', 'slack', 'signal',
+  'irc', 'googlechat', 'feishu', 'nostr', 'msteams', 'mattermost',
+  'nextcloud-talk', 'matrix', 'bluebubbles', 'line', 'zalo', 'zalouser',
+  'synology-chat', 'tlon', 'twitch',
+  // Group types
+  'group',
+  'telegram-group', 'whatsapp-group', 'discord-group', 'slack-group',
+  'signal-group', 'irc-group', 'googlechat-group', 'feishu-group',
+  'nostr-group', 'msteams-group', 'mattermost-group', 'nextcloud-talk-group',
+  'matrix-group', 'bluebubbles-group', 'line-group', 'zalo-group',
+  'zalouser-group', 'synology-chat-group', 'tlon-group', 'twitch-group',
+]);
 
 function isTerminalStopReason(reason) {
   return TERMINAL_STOP_REASONS.has(normalizeStopReason(reason));
@@ -2359,8 +2391,8 @@ function renderSessionList() {
   const filtered = (
     State.filter === 'all'
       ? State.sessions
-      : State.filter === 'telegram'
-        ? State.sessions.filter(s => s.type === 'telegram' || s.type === 'group')
+      : State.filter === 'messenger'
+        ? State.sessions.filter(s => MESSENGER_TYPES.has(s.type))
         : State.sessions.filter(s => s.type === State.filter)
   ).filter(s => {
     if ((s.msg_count || 0) > 0) return true;
@@ -2775,8 +2807,16 @@ function renderMessages(messages, transitions = {}) {
       const provenance = getMessageProvenance(m);
       const isInterSession = provenance.kind === 'inter_session';
       const sourceChannel = (m.source_channel || 'unknown').toLowerCase();
-      const sourceClass = ['direct', 'telegram'].includes(sourceChannel) ? ` source-${sourceChannel}` : ' source-unknown';
-      const sourceLabel = sourceChannel === 'telegram' ? 'Telegram' : (sourceChannel === 'direct' ? 'Direct' : 'You');
+      const sourceClass = sourceChannel === 'direct' ? ' source-direct'
+        : MESSENGER_TYPES.has(sourceChannel) ? ' source-messenger'
+        : ' source-unknown';
+      const _srcLabels = { googlechat: 'Google Chat', bluebubbles: 'iMessage',
+        'nextcloud-talk': 'Nextcloud', 'synology-chat': 'Synology',
+        msteams: 'Teams', zalouser: 'Zalo', imessage: 'iMessage' };
+      const sourceLabel = sourceChannel === 'direct' ? 'Direct'
+        : MESSENGER_TYPES.has(sourceChannel)
+          ? (_srcLabels[sourceChannel] || sourceChannel.charAt(0).toUpperCase() + sourceChannel.slice(1))
+          : 'You';
       RawStore[idx] = m.raw_json || '';
       if (!text.trim()) return '';
       const rightIdChip = m.id
@@ -3153,8 +3193,8 @@ const App = {
       const displayedSessions = (
         State.filter === 'all'
           ? State.sessions
-          : State.filter === 'telegram'
-            ? State.sessions.filter(s => s.type === 'telegram' || s.type === 'group')
+          : State.filter === 'messenger'
+            ? State.sessions.filter(s => MESSENGER_TYPES.has(s.type))
             : State.sessions.filter(s => s.type === State.filter)
       ).filter(s => {
         if ((s.msg_count || 0) > 0) return true;
@@ -3248,7 +3288,8 @@ const App = {
     // If the selected session doesn't match the new filter, deselect it.
     if (State.selectedId && type !== 'all') {
       const sel = State.sessions.find(s => s.session_id === State.selectedId);
-      if (sel && sel.type !== type) {
+      const matches = type === 'messenger' ? MESSENGER_TYPES.has(sel?.type) : sel?.type === type;
+      if (sel && !matches) {
         this._clearSelection();
       }
     }
