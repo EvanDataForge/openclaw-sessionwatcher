@@ -1372,6 +1372,24 @@ def parse_messages(entries: list[dict]) -> list[dict]:
             })
             continue
 
+        if etype == "custom_message":
+            custom_type = entry.get("customType", "")
+            content     = entry.get("content", "")
+            details     = entry.get("details", {})
+            display     = bool(entry.get("display", False))
+            msgs.append({
+                "id":          entry.get("id", ""),
+                "role":        "custom_msg",
+                "custom_type": custom_type,
+                "content":     content,
+                "details":     details if isinstance(details, dict) else {},
+                "display":     display,
+                "ts_iso":      entry.get("timestamp", ""),
+                "ts_fmt":      fmt_iso(entry.get("timestamp", "")),
+                "raw_json":    json.dumps(entry, ensure_ascii=False),
+            })
+            continue
+
         if etype != "message":
             preview = _short_text({
                 "type": etype,

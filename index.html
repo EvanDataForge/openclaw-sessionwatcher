@@ -438,12 +438,14 @@
   }
   .msg-bubble.entry-new,
   .msg-intersession-wrap.entry-new,
-  .msg-event.entry-new {
+  .msg-event.entry-new,
+  .msg-custommsg.entry-new {
     animation: entry-in .2s ease-out;
   }
   .msg-bubble.entry-updated,
   .msg-intersession-wrap.entry-updated,
-  .msg-event.entry-updated {
+  .msg-event.entry-updated,
+  .msg-custommsg.entry-updated {
     animation: entry-update .38s ease-out;
   }
   @keyframes entry-in {
@@ -461,7 +463,9 @@
     .msg-intersession-wrap.entry-new,
     .msg-intersession-wrap.entry-updated,
     .msg-event.entry-new,
-    .msg-event.entry-updated {
+    .msg-event.entry-updated,
+    .msg-custommsg.entry-new,
+    .msg-custommsg.entry-updated {
       animation: none;
     }
   }
@@ -830,6 +834,49 @@
   .msg-event.ev-custom .ev-tag { color: #c69cff; border-color: rgba(166,123,255,.28); }
   .msg-event.ev-meta .ev-tag { color: var(--muted); border-color: rgba(90,97,117,.35); }
   .msg-event .ev-time { margin-left: 4px; font-size: 9px; opacity: 0.6; }
+
+  /* ── Custom messages ── */
+  .msg-custommsg {
+    margin: 6px 0;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    border-left: 3px solid rgba(166,123,255,.45);
+    background: rgba(166,123,255,.04);
+    overflow: hidden;
+  }
+  .msg-custommsg.ct-yield   { border-left-color: rgba(125,211,252,.5); background: rgba(125,211,252,.04); }
+  .msg-custommsg.ct-plan    { border-left-color: rgba(134,239,172,.5); background: rgba(134,239,172,.04); }
+  .msg-custommsg.ct-status  { border-left-color: rgba(252,211,77,.5);  background: rgba(252,211,77,.04);  }
+  .msg-custommsg.ct-trigger { border-left-color: rgba(249,115,22,.5);  background: rgba(249,115,22,.04);  }
+  .msg-custommsg-hdr {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .msg-custommsg-icon { font-style: normal; font-size: 13px; }
+  .msg-custommsg-label {
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: .02em;
+    color: #c69cff;
+  }
+  .msg-custommsg.ct-yield   .msg-custommsg-label { color: #7dd3fc; }
+  .msg-custommsg.ct-plan    .msg-custommsg-label { color: #86efac; }
+  .msg-custommsg.ct-status  .msg-custommsg-label { color: #fcd34d; }
+  .msg-custommsg.ct-trigger .msg-custommsg-label { color: #f97316; }
+  .msg-custommsg-hdr-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .msg-custommsg-time { font-size: 9px; color: var(--muted); opacity: 0.6; }
+  .msg-custommsg-body {
+    padding: 6px 10px 7px;
+    font-size: 11px;
+    color: var(--fg);
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.45;
+  }
+  .msg-custommsg-body.dim { opacity: 0.55; }
 
   /* ── Typing indicator ── */
   .msg-typing {
@@ -2869,6 +2916,41 @@ function renderMessages(messages, transitions = {}) {
           <span style="margin-left:auto">${esc(m.ts_fmt)}</span>
         </div>
         <div class="msg-body">${escText(text)}</div>
+      </div>`;
+    }
+
+    // ── Custom messages (custom_message entries) ──
+    if (m.role === 'custom_msg') {
+      RawStore[idx] = m.raw_json || '';
+      const ctMap = {
+        'openclaw.sessions_yield':           { icon: '↩', label: 'sessions yield',    cls: 'ct-yield'   },
+        'openclaw.sessions_yield_interrupt': { icon: '⚡', label: 'yield interrupt',   cls: 'ct-yield'   },
+        'plan-mode-context':                 { icon: '📋', label: 'plan mode',         cls: 'ct-plan'    },
+        'plan-execution-context':            { icon: '▶',  label: 'plan execution',    cls: 'ct-plan'    },
+        'plan-complete':                     { icon: '✓',  label: 'plan complete',     cls: 'ct-plan'    },
+        'plan-todo-list':                    { icon: '☑',  label: 'plan steps',        cls: 'ct-plan'    },
+        'plan-mode-execute':                 { icon: '▶',  label: 'execute plan',      cls: 'ct-plan'    },
+        'status-update':                     { icon: 'ℹ',  label: 'status',            cls: 'ct-status'  },
+        'file-trigger':                      { icon: '📁', label: 'file trigger',      cls: 'ct-trigger' },
+      };
+      const ctInfo = ctMap[m.custom_type] || { icon: '⚙', label: m.custom_type || 'custom', cls: '' };
+      const rawBtn = m.id
+        ? `<button class="copy-btn" onclick="openRawModal(${idx}, this)" title="View raw JSON">{raw}</button>`
+        : '';
+      const bodyText = m.content || (m.details && m.details.message) || '';
+      const bodyHtml = bodyText
+        ? `<div class="msg-custommsg-body${m.display ? '' : ' dim'}">${escText(bodyText)}</div>`
+        : '';
+      return `<div class="msg-custommsg ${ctInfo.cls}${transitionClass}" data-msgidx="${idx}">
+        <div class="msg-custommsg-hdr">
+          <span class="msg-custommsg-icon">${ctInfo.icon}</span>
+          <span class="msg-custommsg-label">${esc(ctInfo.label)}</span>
+          <span class="msg-custommsg-hdr-right">
+            ${rawBtn}
+            <span class="msg-custommsg-time">${esc(m.ts_fmt)}</span>
+          </span>
+        </div>
+        ${bodyHtml}
       </div>`;
     }
 
