@@ -1064,6 +1064,87 @@
     border-top-right-radius: 0;
     margin-top: 0;
   }
+  .thinking-tc-bridge + .block-terminal {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    margin-top: 0;
+  }
+  .block-terminal {
+    background: #141414;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 4px;
+    font-family: 'Courier New', 'Menlo', monospace;
+    font-size: 10px;
+    margin-bottom: 4px;
+    overflow: hidden;
+  }
+  .block-terminal.error   { border-color: rgba(247,84,84,.5); }
+  .block-terminal.failed  { border-color: rgba(247,84,84,.5); }
+  .block-terminal.running { border-color: rgba(245,166,35,.4); }
+  .block-terminal.accepted{ border-color: rgba(79,142,247,.4); }
+  .block-terminal.completed { border-color: rgba(62,207,110,.4); }
+  .block-terminal.ok      { border-color: rgba(62,207,110,.4); }
+  .block-terminal-prompt {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 6px 10px 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .block-terminal-ps1 {
+    color: #4ade80;
+    font-weight: 700;
+    flex-shrink: 0;
+    user-select: none;
+  }
+  .block-terminal-cmd {
+    color: #e0e0e0;
+    flex: 1;
+  }
+  .block-terminal-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px 4px;
+    font-size: 9px;
+    color: rgba(255,255,255,.55);
+  }
+  .block-terminal-meta .copy-btn {
+    color: inherit;
+    font-size: inherit;
+    opacity: 1;
+    padding: 0;
+    cursor: pointer;
+  }
+  .block-terminal-meta .copy-btn:hover { color: #4ade80; }
+  .block-terminal-divider {
+    border: none;
+    border-top: 1px solid rgba(255,255,255,.08);
+    margin: 0;
+  }
+  .block-terminal-output {
+    padding: 5px 10px;
+    color: rgba(255,255,255,.75);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .block-terminal.error  .block-terminal-output,
+  .block-terminal.failed .block-terminal-output { color: #f75454; }
+  .block-terminal-footer {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px 5px;
+  }
+  .block-terminal .tool-status-badge { background: rgba(255,255,255,.08); }
+  .block-terminal.error  .tool-status-badge { color: #f75454; }
+  .block-terminal.failed .tool-status-badge { color: #f75454; }
+  .block-terminal.running .tool-status-badge { color: var(--orange); }
+  .block-terminal.accepted .tool-status-badge { color: var(--accent); }
+  .block-terminal.completed .tool-status-badge { color: #4ade80; }
+  .block-terminal.ok .tool-status-badge { color: #4ade80; }
+  .block-terminal .show-all-btn { color: rgba(255,255,255,.4); }
   .block-toolcall {
     background: rgba(79,142,247,.07);
     border: 1px solid rgba(79,142,247,.25);
@@ -1997,7 +2078,7 @@ const INTER_SESSION_BEGIN_MARKER = '<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>';
 const INTER_SESSION_PREVIEW_LIMIT = 420;
 
 function expandArgs(key) {
-  const el = document.querySelector(`.block-toolcall-args[data-akey="${key}"]`);
+  const el = document.querySelector(`.block-toolcall-args[data-akey="${key}"], .block-terminal-cmd[data-akey="${key}"]`);
   if (el) {
     el.innerHTML = escText(ArgsStore[key] || '');
     el.style.maxHeight = 'none';
@@ -2766,7 +2847,7 @@ async function fetchAndShowFull(btn) {
   // If full text is already available locally (e.g. ACP sessions), use it directly.
   if (TrFullStore[trkey]) {
     ExpandedFull[eid] = TrFullStore[trkey];
-    const previewEl = document.querySelector(`.block-toolresult-preview[data-trkey="${trkey}"]`);
+    const previewEl = document.querySelector(`.block-toolresult-preview[data-trkey="${trkey}"], .block-terminal-output[data-trkey="${trkey}"]`);
     if (previewEl) {
       previewEl.innerHTML = escText(TrFullStore[trkey]);
       previewEl.style.maxHeight = 'none';
@@ -2780,7 +2861,7 @@ async function fetchAndShowFull(btn) {
   try {
     const d = await API.request(`/api/sessions/${sid}/entry/${eid}/full`);
     ExpandedFull[eid] = d.text || '';
-    const previewEl = document.querySelector(`.block-toolresult-preview[data-trkey="${trkey}"]`);
+    const previewEl = document.querySelector(`.block-toolresult-preview[data-trkey="${trkey}"], .block-terminal-output[data-trkey="${trkey}"]`);
     if (previewEl) {
       previewEl.innerHTML = escText(d.text || '');
       previewEl.style.maxHeight = 'none';
@@ -2806,6 +2887,77 @@ function toggleThinkingBlock(key) {
   State.thinkingStates[key] = !State.thinkingStates[key];
   const el = document.querySelector(`.block-thinking[data-key="${key}"]`);
   if (el) el.classList.toggle('collapsed', !State.thinkingStates[key]);
+}
+
+function formatArgsAsCli(name, argsJson) {
+  let args;
+  try { args = JSON.parse(argsJson); } catch(e) { return argsJson || ''; }
+  if (typeof args !== 'object' || args === null) return String(args);
+  const n = name.toLowerCase();
+  if ((n === 'bash' || n === 'exec') && args.command) return args.command;
+  if (n === 'read' && args.type === 'text') {
+    const path = args.file_path || args.filePath || args.path || '';
+    const flags = [];
+    if (args.offset) flags.push(`-n +${args.offset}`);
+    if (args.limit)  flags.push(`| head -n ${args.limit}`);
+    return ['cat', path, ...flags].filter(Boolean).join(' ');
+  }
+  const parts = Object.entries(args).map(([k, v]) => {
+    const vs = typeof v === 'string' ? v : JSON.stringify(v);
+    const vShort = vs.length > 120 ? vs.slice(0, 117) + '…' : vs;
+    return `--${k}=${vShort}`;
+  });
+  return name + (parts.length ? ' ' + parts.join(' ') : '');
+}
+
+function renderToolTerminal(callBlock, resultBlock, key, callEntryId, resultMsgId, resultMsgIdx) {
+  const cliCmd = formatArgsAsCli(callBlock.name, callBlock.args || '');
+  const PROMPT_LIMIT = 400;
+  const promptTrimmed = cliCmd.length > PROMPT_LIMIT;
+  const promptPk = `${key}-prompt`;
+  if (promptTrimmed) ArgsStore[promptPk] = cliCmd;
+  const promptDisplay = promptTrimmed ? cliCmd.slice(0, PROMPT_LIMIT) : cliCmd;
+  const promptShowAll = promptTrimmed
+    ? `<button class="show-all-btn" data-akey="${esc(promptPk)}" onclick="expandArgs('${esc(promptPk)}')">(show all)</button>` : '';
+
+  let statusClass = '';
+  let outputHtml = '';
+  let footerHtml = '';
+
+  if (resultBlock) {
+    const toolStatus = resultBlock.is_error
+      ? { type: 'error', label: 'ERROR' }
+      : (resultBlock.details ? getToolResultStatus(resultBlock.details) : { type: 'neutral', label: '' });
+    statusClass = toolStatus.type !== 'neutral' ? ` ${toolStatus.type}` : (resultBlock.is_error ? ' error' : '');
+    const statusBadgeHtml = toolStatus.label
+      ? `<span class="tool-status-badge">${toolStatus.label}</span>` : '';
+
+    const resolveId = resultMsgId || callEntryId;
+    const alreadyExpanded = resolveId && ExpandedFull[resolveId] !== undefined;
+    const displayText = alreadyExpanded ? ExpandedFull[resolveId] : (resultBlock.text || '');
+    const trimmed = !alreadyExpanded && resultBlock.total_chars > 300;
+    const chars = trimmed ? `· ${resultBlock.total_chars} chars` : '';
+    const trKey = `${key}-tr`;
+    if (resultBlock.text_full && resultBlock.total_chars > 300) TrFullStore[trKey] = resultBlock.text_full;
+    const showAllBtn = trimmed
+      ? `<button class="show-all-btn" data-trkey="${esc(trKey)}" data-eid="${esc(resolveId||'')}" onclick="fetchAndShowFull(this)">(show all)</button>` : '';
+
+    let metaHtml = '';
+    if (resultMsgId && resultMsgId !== callEntryId) {
+      if (resultMsgIdx !== null && resultBlock._raw) RawStore[resultMsgIdx] = resultBlock._raw;
+      const copyBtn = `<button class="copy-btn" onclick="copyMsgId('${esc(resultMsgId)}',this)" title="Copy ID">⧉</button>`;
+      const rawBtn = resultMsgIdx !== null
+        ? `<button class="copy-btn" onclick="openRawModal(${resultMsgIdx},this)" title="View raw JSON">{raw}</button>` : '';
+      metaHtml = `<div class="block-terminal-meta"><span title="${esc(resultMsgId)}">${esc(resultMsgId.slice(0,8))}</span>${copyBtn}${rawBtn}${resultBlock._ts ? ' · ' + esc(resultBlock._ts) : ''}</div>`;
+    }
+
+    outputHtml = `<hr class="block-terminal-divider">${metaHtml}<div class="block-terminal-output" data-trkey="${esc(trKey)}">${escText(displayText)}</div>`;
+    const hasFooter = statusBadgeHtml || showAllBtn || chars;
+    footerHtml = hasFooter
+      ? `<div class="block-terminal-footer">${statusBadgeHtml}${showAllBtn}<span style="color:rgba(255,255,255,.25);font-size:9px">${chars}</span></div>` : '';
+  }
+
+  return `<div class="block-terminal${statusClass}"><div class="block-terminal-prompt"><span class="block-terminal-ps1">$</span><span class="block-terminal-cmd" data-akey="${esc(promptPk)}">${escText(promptDisplay)}</span>${promptShowAll}</div>${outputHtml}${footerHtml}</div>`;
 }
 
 function renderBlock(b, key, entryId) {
@@ -2871,9 +3023,35 @@ function renderMessages(messages, transitions = {}) {
     return;
   }
 
+  // Pre-process: pair non-ACP toolCall blocks with subsequent role='toolResult' messages
+  const pairedResults = {};   // "msgIdx-blockIdx" → toolResult message object
+  const consumedIdxs = new Set();
+  messages.forEach((m, idx) => {
+    if (m.role !== 'assistant' || !m.blocks?.length) return;
+    const callBlockIdxs = m.blocks.reduce((acc, b, bi) => {
+      if (b.kind === 'toolCall') acc.push(bi);
+      return acc;
+    }, []);
+    if (!callBlockIdxs.length) return;
+    // If all calls already have adjacent toolResults in blocks (ACP), skip cross-message pairing
+    if (callBlockIdxs.every(bi => m.blocks[bi + 1]?.kind === 'toolResult')) return;
+    let callIdx = 0;
+    for (let j = idx + 1; j < messages.length && callIdx < callBlockIdxs.length; j++) {
+      if (messages[j].role === 'toolResult') {
+        pairedResults[`${idx}-${callBlockIdxs[callIdx++]}`] = { msg: messages[j], idx: j };
+        consumedIdxs.add(j);
+      } else if (messages[j].role === 'assistant') {
+        break;
+      }
+    }
+  });
+
   el.innerHTML = messages.map((m, idx) => {
     const key = getMessageKey(m, idx);
     const transitionClass = transitions[key] ? ` ${transitions[key]}` : '';
+
+    // Skip toolResult messages consumed into a terminal box
+    if (consumedIdxs.has(idx)) return '';
 
     // ── Event markers (thinking/model change) ──
     if (m.role === 'event') {
@@ -3035,14 +3213,51 @@ function renderMessages(messages, transitions = {}) {
         <div class="block-toolresult-preview" data-trkey="${esc(trKey)}">${escText(displayText)}</div>${showAllBtn}
       </div>`;
     } else if (m.blocks && m.blocks.length > 0) {
-      bodyHtml = m.blocks.map((b, bi) => {
-        let html = renderBlock(b, `${idx}-${bi}`, m.id);
+      const blockHtmlParts = [];
+      let bi = 0;
+      while (bi < m.blocks.length) {
+        const b = m.blocks[bi];
         const next = m.blocks[bi + 1];
-        if (b.kind === 'thinking' && next?.kind === 'toolCall' && m.stop_reason) {
-          html += `<div class="thinking-tc-bridge">↳ ${stopBadge(m.stop_reason)}</div>`;
+        if (b.kind === 'thinking') {
+          blockHtmlParts.push(renderBlock(b, `${idx}-${bi}`, m.id));
+          if (next?.kind === 'toolCall' && m.stop_reason) {
+            blockHtmlParts.push(`<div class="thinking-tc-bridge">↳ ${stopBadge(m.stop_reason)}</div>`);
+          }
+          bi++;
+          continue;
         }
-        return html;
-      }).join('');
+        if (b.kind === 'toolCall') {
+          let resultBlock = null;
+          let resultMsgId = null;
+          let resultMsgIdx = null;
+          if (next?.kind === 'toolResult') {
+            resultBlock = next;
+            bi += 2;
+          } else {
+            const paired = pairedResults[`${idx}-${bi}`];
+            if (paired) {
+              const pm = paired.msg;
+              resultBlock = {
+                text: pm.text,
+                text_full: pm.text_full,
+                total_chars: pm.total_chars,
+                is_error: pm.is_error,
+                details: pm.details,
+                _ts: pm.ts_fmt,
+                _raw: pm.raw_json,
+              };
+              resultMsgId = pm.id;
+              resultMsgIdx = paired.idx;
+            }
+            bi++;
+          }
+          blockHtmlParts.push(renderToolTerminal(b, resultBlock, `${idx}-${bi - 1}`, m.id, resultMsgId, resultMsgIdx));
+          continue;
+        }
+        blockHtmlParts.push(renderBlock(b, `${idx}-${bi}`, m.id));
+        bi++;
+      }
+      bodyHtml = blockHtmlParts.join('');
       const hasTextBlock = (m.blocks || []).some(b => b.kind === 'text' && b.text && b.text.trim());
       if (!bodyHtml.trim()) {
         if (errorText) {
