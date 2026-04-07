@@ -2895,8 +2895,8 @@ function formatArgsAsCli(name, argsJson) {
   if (typeof args !== 'object' || args === null) return String(args);
   const n = name.toLowerCase();
   if ((n === 'bash' || n === 'exec') && args.command) return args.command;
-  if (n === 'read' && args.type === 'text') {
-    const path = args.file_path || args.filePath || args.path || '';
+  if (n === 'read' && (args.file_path || args.filePath || args.path || args.file)) {
+    const path = args.file_path || args.filePath || args.path || args.file;
     const flags = [];
     if (args.offset) flags.push(`-n +${args.offset}`);
     if (args.limit)  flags.push(`| head -n ${args.limit}`);
@@ -2904,8 +2904,7 @@ function formatArgsAsCli(name, argsJson) {
   }
   const parts = Object.entries(args).map(([k, v]) => {
     const vs = typeof v === 'string' ? v : JSON.stringify(v);
-    const vShort = vs.length > 120 ? vs.slice(0, 117) + '…' : vs;
-    return `--${k}=${vShort}`;
+    return `--${k}=${vs}`;
   });
   return name + (parts.length ? ' ' + parts.join(' ') : '');
 }
@@ -2957,7 +2956,8 @@ function renderToolTerminal(callBlock, resultBlock, key, callEntryId, resultMsgI
       ? `<div class="block-terminal-footer">${statusBadgeHtml}${showAllBtn}<span style="color:rgba(255,255,255,.25);font-size:9px">${chars}</span></div>` : '';
   }
 
-  return `<div class="block-terminal${statusClass}"><div class="block-terminal-prompt"><span class="block-terminal-ps1">$</span><span class="block-terminal-cmd" data-akey="${esc(promptPk)}">${escText(promptDisplay)}</span>${promptShowAll}</div>${outputHtml}${footerHtml}</div>`;
+  const showAllRow = promptShowAll ? `<div style="padding:0 10px 4px">${promptShowAll}</div>` : '';
+  return `<div class="block-terminal${statusClass}"><div class="block-terminal-prompt"><span class="block-terminal-ps1">$</span><span class="block-terminal-cmd" data-akey="${esc(promptPk)}">${escText(promptDisplay)}</span></div>${showAllRow}${outputHtml}${footerHtml}</div>`;
 }
 
 function renderBlock(b, key, entryId) {
