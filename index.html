@@ -253,7 +253,7 @@
   .card-row1 {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
+    gap: 5px;
     margin-bottom: 4px;
   }
 
@@ -267,12 +267,36 @@
   .type-badge {
     font-size: 9px;
     font-weight: 700;
-    letter-spacing: .05em;
-    padding: 1px 5px;
+    letter-spacing: .03em;
+    padding: 0 5px;
     border-radius: 3px;
     text-transform: uppercase;
+    line-height: 1.7;
     flex-shrink: 0;
   }
+
+  .agent-badge-prominent {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: rgba(34,197,94,.12);
+    color: #16a34a;
+    border: none;
+    line-height: 1.7;
+    flex-shrink: 0;
+  }
+
+  .agent-badge-main {
+    background: rgba(79,142,247,.14);
+    color: var(--type-main);
+  }
+
+  .agent-badge-other {
+    background: rgba(34,197,94,.12);
+    color: #16a34a;
+  }
+
   .type-main     { background: rgba(79,142,247,.2);  color: var(--type-main); }
   .type-group,
   .type-telegram-group, .type-whatsapp-group, .type-discord-group,
@@ -2633,8 +2657,10 @@ function renderSessionList() {
         : `<span class="card-label" title="${esc(s.label)}">${esc(s.label)}</span>`;
     }
 
+    const agentBadgeClass = s.agent === 'main' ? 'agent-badge-main' : 'agent-badge-other';
     return `<div class="session-card${selected}${unread}" data-id="${esc(s.session_id)}" onclick="App.selectSession('${esc(s.session_id)}')">
       <div class="card-row1">
+        ${s.agent ? `<span class="agent-badge-prominent ${agentBadgeClass}">${esc(s.agent)}</span>` : ''}
         <span class="type-badge ${typeClass}">${esc(s.type_label)}</span>
         ${labelHtml}
         ${unreadDot}${statusDot}
